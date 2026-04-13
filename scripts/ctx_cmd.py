@@ -263,7 +263,7 @@ def require_workstream(name: str, *, set_current: bool = False) -> Dict[str, obj
     ws = lookup_workstream(name)
     if not ws:
         print(
-            f"Workstream '{name}' not found. Use 'ctx start {name}' to create a new one.",
+            f"No workstream matching '{name}' exists.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -1646,7 +1646,10 @@ def main():
         )
     elif args.cmd == "go":
         compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
-        ws = require_workstream(args.name, set_current=False)
+        ws = lookup_workstream(args.name)
+        if not ws:
+            sys.stdout.write(f"No workstream matching '{args.name}' exists.\n")
+            return 0
         _assert_repo_guard(
             ws,
             allow_other_repo=getattr(args, "allow_other_repo", False),
@@ -1777,7 +1780,10 @@ def main():
         )
     elif args.cmd == "resume":
         compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
-        ws = require_workstream(args.name, set_current=False)
+        ws = lookup_workstream(args.name)
+        if not ws:
+            sys.stdout.write(f"No workstream matching '{args.name}' exists.\n")
+            return 0
         _assert_repo_guard(
             ws,
             allow_other_repo=getattr(args, "allow_other_repo", False),

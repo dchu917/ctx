@@ -35,7 +35,7 @@ Supported chat-style commands in this repo:
 - `ctx resume <workstream>`
   - Run `ctx resume <workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py resume <workstream> --format markdown`.
-  - `resume` means continue an existing workstream. If the workstream does not exist, tell the user to use `ctx start <workstream>` instead.
+  - `resume` means continue an existing workstream. If no matching workstream exists, tell the user plainly that no matching workstream exists.
   - If the workstream belongs to a different repo, `ctx resume` should fail unless the user explicitly adds `--allow-other-repo`.
   - Do not paste the full ctx pack back unless the user asks for it.
   - Summarize the loaded workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.
