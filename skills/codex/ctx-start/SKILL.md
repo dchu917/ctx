@@ -10,12 +10,14 @@ What it does
 - Emits a status line: "Context for [slug] ingested. S<id> created. Last: <type> — <preview>".
 
 How to trigger
-- Run the helper script from your repo clone:
+- In chat:
+  - /ctx start <workstream>
+  - /ctx start <workstream> --pull (also ingests current chat)
+- Run from terminal:
   - `python3 scripts/skills/ctx_start_skill.py --name "<workstream>" --agent codex`
-  - Add `--paste` on macOS to paste into the frontmost app.
+  - Add `--pull` to ingest, `--paste` to auto-paste pack (macOS)
 
 Requirements
 - Python 3.9+
 - Local transcripts in `~/.codex/sessions` or `~/.claude/projects` (override via `CODEX_HOME`/`CLAUDE_HOME`).
 - ContextFun DB (local or global). Use `scripts/quickstart.sh` to initialize.
-

@@ -68,11 +68,16 @@ def _ensure_workstream(name: typing.Optional[str]) -> dict:
         return {"id": int(row["id"]), "slug": row["slug"], "title": row["title"]}
 
 
-def _create_session(agent: str) -> int:
+def _create_session(agent: str, workstream_slug: typing.Optional[str] = None, workstream_id: typing.Optional[int] = None) -> int:
     db = str(_db_path())
-    out = subprocess.check_output([
+    cmd = [
         "python3", "-m", "contextfun", "--db", db, "session-new", "New session", "--agent", agent,
-    ])
+    ]
+    if workstream_slug:
+        cmd += ["--workstream-slug", workstream_slug]
+    elif workstream_id:
+        cmd += ["--workstream-id", str(workstream_id)]
+    out = subprocess.check_output(cmd)
     try:
         return int(out.decode().strip())
     except Exception:
@@ -89,6 +94,32 @@ def _auto_pull():
 def _pack(slug: str, fmt: str = "markdown") -> str:
     out = subprocess.check_output(_ctx_invocation() + ["resume", slug, "--format", fmt])
     return out.decode()
+
+
+def _ingest_from_frontmost(workstream_slug: str, fmt: str = "markdown", source: typing.Optional[str] = None) -> None:
+    # macOS: select all + copy the chat content from frontmost app, then ingest into the latest session of the workstream
+    try:
+        subprocess.check_call(["osascript", "-e", 'tell application "System Events" to keystroke "a" using {command down}'])
+        subprocess.check_call(["osascript", "-e", 'tell application "System Events" to keystroke "c" using {command down}'])
+    except Exception:
+        # Best-effort; continue with whatever is on clipboard
+        pass
+    try:
+        clip = subprocess.check_output(["pbpaste"]).decode()
+    except Exception:
+        return
+    args = [
+        "python3", "-m", "contextfun", "ingest",
+        "--workstream-slug", workstream_slug,
+        "--file", "-",
+        "--format", fmt,
+    ]
+    if source:
+        args += ["--source", source]
+    try:
+        subprocess.check_call(args, input=clip.encode(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        pass
 
 
 def _last_entry_preview(workstream_id: int, max_len: int = 200) -> typing.Optional[typing.Tuple[str, str]]:
@@ -129,15 +160,20 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="ctx skill: start new session, auto-pull, copy pack, and print a status line")
     ap.add_argument("--name", help="Workstream slug or title (optional; defaults to current or latest)")
     ap.add_argument("--agent", default=os.getenv("CTX_AGENT_DEFAULT", "other"))
-    ap.add_argument("--format", default="markdown", choices=["text", "markdown"], help="Pack format")
+    # Single format flag controls both ingest and pack output
     ap.add_argument("--no-pack", action="store_true", help="Skip generating the pack; just ingest and report")
     ap.add_argument("--no-copy", action="store_true", help="Do not copy pack to clipboard")
     ap.add_argument("--paste", action="store_true", help="macOS: paste into frontmost app after copying")
+    ap.add_argument("--pull", action="store_true", help="macOS: copy the current chat (Cmd+A/C) and ingest into this new session before packing")
+    ap.add_argument("--format", default="markdown", choices=["text", "markdown"], help="Ingest/pack format")
+    ap.add_argument("--source", default=os.getenv("CTX_SOURCE_DEFAULT"), help="Source label for ingest (e.g., claude, codex)")
     args = ap.parse_args(argv)
 
     ws = _ensure_workstream(args.name)
-    sid = _create_session(agent=args.agent)
+    sid = _create_session(agent=args.agent, workstream_slug=ws.get("slug"), workstream_id=ws.get("id"))
     _auto_pull()
+    if args.pull:
+        _ingest_from_frontmost(workstream_slug=ws["slug"], fmt=args.format, source=args.source)
 
     pack_text = ""
     if not args.no_pack:
