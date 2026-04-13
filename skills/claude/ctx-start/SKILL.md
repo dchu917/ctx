@@ -10,7 +10,7 @@ Usage
   - `--pull` can appear before or after the workstream name
 
 What it runs
-- `./scripts/skills/ctx_start.sh`
+- `bash ./scripts/skills/ctx_start.sh`
 - Falls back to `ctx start` or `python3 scripts/ctx_cmd.py start`
 
 Notes

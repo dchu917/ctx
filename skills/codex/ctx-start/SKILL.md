@@ -14,6 +14,7 @@ How to trigger
   - `ctx-start --pull <workstream>` (also ingests current chat)
   - `--pull` can appear before or after the workstream name
 - Run from terminal:
+  - `bash ./scripts/skills/ctx_start.sh --pull my-workstream`
   - `ctx-start my-workstream`
   - `python3 scripts/ctx_cmd.py start my-workstream --format markdown`
 

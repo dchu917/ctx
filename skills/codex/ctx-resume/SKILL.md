@@ -12,6 +12,7 @@ How to trigger
 - In Codex:
   - `ctx-resume <workstream>`
 - Run from terminal:
+  - `bash ./scripts/skills/ctx_resume.sh my-workstream`
   - `python3 scripts/ctx_cmd.py resume "<workstream>" --format markdown`
 
 Requirements
