@@ -48,7 +48,9 @@ ctx web --open
 
 Run `ctx web --open` in the terminal or in the agent shell.
 
-Terminal demo video: [docs/ctx-demo.mp4](docs/ctx-demo.mp4)
+[![ctx terminal demo](docs/ctx-demo-poster.png)](docs/ctx-demo.mp4)
+
+Terminal demo video: click the poster above, or open [docs/ctx-demo.mp4](docs/ctx-demo.mp4).
 
 3. Start a new workstream:
 
