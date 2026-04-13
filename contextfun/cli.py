@@ -54,7 +54,26 @@ SCHEMA = [
         FOREIGN KEY(session_id) REFERENCES session(id) ON DELETE CASCADE
     );
     """,
+    """
+    CREATE TABLE IF NOT EXISTS workstream_source_link (
+        id INTEGER PRIMARY KEY,
+        workstream_id INTEGER NOT NULL,
+        source TEXT NOT NULL,
+        external_session_id TEXT NOT NULL,
+        transcript_path TEXT,
+        transcript_mtime REAL,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        metadata TEXT,
+        FOREIGN KEY(workstream_id) REFERENCES workstream(id) ON DELETE CASCADE,
+        UNIQUE(workstream_id, source),
+        UNIQUE(source, external_session_id)
+    );
+    """,
     "CREATE INDEX IF NOT EXISTS idx_entry_session ON entry(session_id);",
+    "CREATE INDEX IF NOT EXISTS idx_workstream_source_link_ws ON workstream_source_link(workstream_id);",
+    "CREATE INDEX IF NOT EXISTS idx_workstream_source_link_source ON workstream_source_link(source, external_session_id);",
 ]
 
 
@@ -122,12 +141,55 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # Add workstream_id to session if missing
     if not _column_exists(conn, "session", "workstream_id"):
         conn.execute("ALTER TABLE session ADD COLUMN workstream_id INTEGER")
+    if not _table_exists(conn, "workstream_source_link"):
+        conn.executescript(
+            """
+            CREATE TABLE workstream_source_link (
+                id INTEGER PRIMARY KEY,
+                workstream_id INTEGER NOT NULL,
+                source TEXT NOT NULL,
+                external_session_id TEXT NOT NULL,
+                transcript_path TEXT,
+                transcript_mtime REAL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                metadata TEXT,
+                FOREIGN KEY(workstream_id) REFERENCES workstream(id) ON DELETE CASCADE,
+                UNIQUE(workstream_id, source),
+                UNIQUE(source, external_session_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_workstream_source_link_ws ON workstream_source_link(workstream_id);
+            CREATE INDEX IF NOT EXISTS idx_workstream_source_link_source ON workstream_source_link(source, external_session_id);
+            """
+        )
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _workstream_source_links(conn: sqlite3.Connection, workstream_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT * FROM workstream_source_link
+        WHERE workstream_id = ?
+        ORDER BY source ASC
+        """,
+        (workstream_id,),
+    ).fetchall()
+
+
+def _source_links_summary(conn: sqlite3.Connection, workstream_id: int) -> str:
+    links = _workstream_source_links(conn, workstream_id)
+    if not links:
+        return ""
+    parts = []
+    for link in links:
+        parts.append(f"{link['source']}:{link['external_session_id']}")
+    return ", ".join(parts)
 
 
 def init_db(db_path: Path, quiet: bool = False) -> None:
@@ -258,6 +320,10 @@ def cmd_session_show(args: argparse.Namespace):
                     print(f"  Summary: {meta['summary']}")
             except Exception:
                 pass
+        if s["workstream_id"]:
+            linked = _source_links_summary(conn, int(s["workstream_id"]))
+            if linked:
+                print(f"  External links: {linked}")
         print("-- Entries --")
         rows = conn.execute(
             "SELECT * FROM entry WHERE session_id = ? ORDER BY id DESC",
@@ -507,6 +573,9 @@ def cmd_workstream_show(args: argparse.Namespace):
                     print(f"  Summary: {meta['summary']}")
             except Exception:
                 pass
+        linked = _source_links_summary(conn, int(w["id"]))
+        if linked:
+            print(f"  External links: {linked}")
         print("-- Recent Sessions --")
         rows = conn.execute(
             """

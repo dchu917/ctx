@@ -70,9 +70,10 @@ EOF
   cat <<'NEXT'
 - Activate this project env in new shells: source ./ctx.env
 - Claude Code:
-  - Restart Claude Code, then use `/ctx list`, `/ctx start my-stream --pull`, `/ctx resume my-stream`, `/ctx delete my-stream`
+  - Restart Claude Code, then use `/ctx`, `/ctx list`, `/ctx start my-stream --pull`, `/ctx resume my-stream`, `/ctx delete my-stream`, `/ctx branch source-stream target-stream`
+  - Shortcut: `/branch source-stream target-stream`
 - Codex:
-  - Restart Codex, then use `ctx-list`, `ctx-start --pull my-stream`, `ctx-resume my-stream`, `ctx-delete my-stream`
+  - Restart Codex, then use `ctx`, `ctx-list`, `ctx-start --pull my-stream`, `ctx-resume my-stream`, `ctx-delete my-stream`, `ctx-branch source-stream target-stream`
   - Codex does not currently support custom repo-defined slash commands like `/ctx-list`.
 - Optional automation helpers for paste/status workflows:
   - `python3 scripts/skills/ctx_resume_skill.py --name "my-stream" --paste`

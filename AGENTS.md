@@ -4,6 +4,11 @@ Use the installed ContextFun commands directly when the user types them as a mes
 
 Supported chat-style commands in this repo:
 
+- `ctx`
+  - Run `ctx`.
+  - If that is unavailable, run `python3 scripts/ctx_cmd.py`.
+  - Return stdout directly.
+
 - `ctx-list`
   - Run `ctx-list`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py list`.
@@ -24,6 +29,11 @@ Supported chat-style commands in this repo:
   - Run `ctx-delete ...`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py delete ...`.
   - This is destructive: it deletes the latest session in the named workstream, or the explicit session id.
+
+- `ctx-branch <source-workstream> <target-workstream>`
+  - Run `ctx-branch <source-workstream> <target-workstream>`.
+  - If that is unavailable, run `python3 scripts/ctx_cmd.py branch <source-workstream> <target-workstream> --format markdown`.
+  - This creates a new workstream seeded from the source workstream snapshot, but future transcript pulls stay independent.
 
 Behavior notes:
 

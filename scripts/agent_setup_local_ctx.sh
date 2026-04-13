@@ -3,9 +3,9 @@ set -euo pipefail
 
 # Project-local agent setup: downloads ContextFun into ./ctx and wires env vars.
 # Usage in Claude Code / Codex terminal:
-#   source <(curl -fsSL https://raw.githubusercontent.com/dchu917/contextfun/main/scripts/agent_setup_local_ctx.sh)
+#   source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_setup_local_ctx.sh)
 
-REPO_URL="https://github.com/dchu917/contextfun"
+REPO_URL="https://github.com/dchu917/ctx"
 ARCHIVE_URL="$REPO_URL/archive/refs/heads/main.tar.gz"
 
 PREFIX="$PWD/ctx"
@@ -35,4 +35,3 @@ export CONTEXTFUN_DB="$DB_PATH"
 export PATH="$BIN_DIR:$PATH"
 
 echo "ContextFun ready in ./ctx (DB: $DB_PATH). Commands available: ctx, python3 -m contextfun"
-

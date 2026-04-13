@@ -15,7 +15,7 @@ for _ in 1 2 3 4 5 6 7 8; do
 done
 
 NAME="${*:-${CTX_AGENT_WORKSTREAM:-}}"
-CMD=(--format markdown)
+CMD=(--format markdown --source codex)
 if [[ -n "$NAME" ]]; then
   CMD+=("$NAME")
 fi

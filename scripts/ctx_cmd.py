@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 import shutil
 import json
+import re
 from typing import List, Dict, Optional, Tuple
 
 
@@ -51,16 +52,24 @@ def ensure_workstream(name, set_current=False):
     return json.loads(out)
 
 
-def create_session(agent=None):
-    title = "New session"
+def create_session(agent=None, title: str = "New session"):
     args = ["session-new", title]
     if agent:
         args += ["--agent", agent]
-    return run_ctx(args).strip()
+    return int(run_ctx(args).strip())
 
 
 def pack(slug, focus=None, fmt="markdown", brief=False):
     args = ["resume", "--workstream-slug", slug, "--format", fmt]
+    if focus:
+        args += ["--focus", focus]
+    if brief:
+        args.append("--brief")
+    return run_ctx(args)
+
+
+def workstream_pack(slug, focus=None, fmt="markdown", brief=False):
+    args = ["pack", "--workstream-slug", slug, "--format", fmt]
     if focus:
         args += ["--focus", focus]
     if brief:
@@ -93,13 +102,145 @@ def lookup_workstream(name: str) -> Optional[Dict[str, object]]:
     return {"id": int(row["id"]), "slug": row["slug"], "title": row["title"]}
 
 
+def current_workstream() -> Optional[Dict[str, object]]:
+    cur_file = ROOT / ".contextfun" / "current.json"
+    if not cur_file.exists():
+        return None
+    try:
+        cur = json.loads(cur_file.read_text(encoding="utf-8"))
+        return {"id": int(cur["id"]), "slug": cur["slug"], "title": cur.get("title", cur["slug"])}
+    except Exception:
+        return None
+
+
+def _connect_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(str(_db_path()))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def latest_session_id(workstream_slug: Optional[str] = None, workstream_id: Optional[int] = None) -> Optional[int]:
+    db = _db_path()
+    if not db.exists():
+        return None
+    with _connect_db() as conn:
+        if workstream_slug or workstream_id:
+            if workstream_slug:
+                row = conn.execute("SELECT id FROM workstream WHERE slug = ?", (workstream_slug,)).fetchone()
+            else:
+                row = conn.execute("SELECT id FROM workstream WHERE id = ?", (workstream_id,)).fetchone()
+            if not row:
+                return None
+            wid = int(row["id"])
+        else:
+            cur = current_workstream()
+            if not cur:
+                return None
+            wid = int(cur["id"])
+        row = conn.execute(
+            "SELECT id FROM session WHERE workstream_id = ? ORDER BY id DESC LIMIT 1",
+            (wid,),
+        ).fetchone()
+        return int(row["id"]) if row else None
+
+
+def ensure_session_for_workstream(workstream: Dict[str, object], agent: Optional[str] = None) -> int:
+    sid = latest_session_id(workstream_slug=str(workstream["slug"]))
+    if sid is not None:
+        return sid
+    return create_session(agent=agent)
+
+
+def _workstream_source_link(workstream_id: int, source: str) -> Optional[sqlite3.Row]:
+    db = _db_path()
+    if not db.exists():
+        return None
+    with _connect_db() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM workstream_source_link
+            WHERE workstream_id = ? AND source = ?
+            """,
+            (workstream_id, source),
+        ).fetchone()
+
+
+def _workstream_source_links(workstream_id: int) -> List[sqlite3.Row]:
+    db = _db_path()
+    if not db.exists():
+        return []
+    with _connect_db() as conn:
+        return conn.execute(
+            """
+            SELECT * FROM workstream_source_link
+            WHERE workstream_id = ?
+            ORDER BY source ASC
+            """,
+            (workstream_id,),
+        ).fetchall()
+
+
+def _external_owner(source: str, external_session_id: str) -> Optional[Dict[str, object]]:
+    db = _db_path()
+    if not db.exists():
+        return None
+    with _connect_db() as conn:
+        row = conn.execute(
+            """
+            SELECT l.workstream_id, w.slug, w.title
+            FROM workstream_source_link l
+            JOIN workstream w ON w.id = l.workstream_id
+            WHERE l.source = ? AND l.external_session_id = ?
+            """,
+            (source, external_session_id),
+        ).fetchone()
+    if not row:
+        return None
+    return {"id": int(row["workstream_id"]), "slug": row["slug"], "title": row["title"]}
+
+
+def _upsert_workstream_source_link(
+    workstream_id: int,
+    source: str,
+    external_session_id: str,
+    transcript_path: Path,
+    transcript_mtime: float,
+    message_count: int,
+) -> None:
+    with _connect_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO workstream_source_link(
+                workstream_id, source, external_session_id, transcript_path,
+                transcript_mtime, message_count, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            ON CONFLICT(workstream_id, source) DO UPDATE SET
+                external_session_id = excluded.external_session_id,
+                transcript_path = excluded.transcript_path,
+                transcript_mtime = excluded.transcript_mtime,
+                message_count = excluded.message_count,
+                updated_at = datetime('now')
+            """,
+            (
+                workstream_id,
+                source,
+                external_session_id,
+                str(transcript_path),
+                transcript_mtime,
+                message_count,
+            ),
+        )
+        conn.commit()
+
+
 # -------- Transcript ingestion helpers --------
 
 def _expanduser(p: str) -> Path:
     return Path(os.path.expanduser(p)).resolve()
 
 
-def _latest_jsonl_under(root: Path, name_hint: Optional[str] = None) -> Optional[Path]:
+def _latest_jsonl_under(root: Path, name_hint: Optional[str] = None, source: Optional[str] = None) -> Optional[Path]:
     latest: Tuple[float, Optional[Path]] = (0.0, None)
     if not root.exists():
         return None
@@ -107,10 +248,15 @@ def _latest_jsonl_under(root: Path, name_hint: Optional[str] = None) -> Optional
         for f in files:
             if not (f.endswith(".jsonl") or f.endswith(".json")):
                 continue
+            p = Path(dirpath) / f
+            if source == "claude":
+                if "subagents" in p.parts:
+                    continue
+                if f.endswith(".meta.json"):
+                    continue
             if name_hint and name_hint not in f:
                 # prefer name-hinted files
                 pass
-            p = Path(dirpath) / f
             try:
                 m = p.stat().st_mtime
                 if m >= latest[0]:
@@ -167,6 +313,8 @@ def _read_jsonl_messages(path: Path) -> List[Dict[str, str]]:
             if isinstance(obj, dict):
                 role = obj.get("role") or obj.get("sender")
                 text = obj.get("content") or obj.get("text")
+                if not role and isinstance(obj.get("message"), dict):
+                    role = obj["message"].get("role")
                 # Event-shaped
                 t = obj.get("type") or obj.get("event")
                 if not role and isinstance(t, str):
@@ -188,6 +336,16 @@ def _read_jsonl_messages(path: Path) -> List[Dict[str, str]]:
                     text = "\n".join([p for p in parts if p]) if parts else None
                 if text is None and "message" in obj and isinstance(obj["message"], dict):
                     text = obj["message"].get("text") or obj["message"].get("content")
+                    if isinstance(text, list):
+                        parts = []
+                        for b in text:
+                            if isinstance(b, str):
+                                parts.append(b)
+                            elif isinstance(b, dict):
+                                val = b.get("text") or b.get("content")
+                                if isinstance(val, str):
+                                    parts.append(val)
+                        text = "\n".join([p for p in parts if p]) if parts else None
             if text:
                 msgs.append({"role": role or "system", "content": text})
     except Exception:
@@ -195,66 +353,279 @@ def _read_jsonl_messages(path: Path) -> List[Dict[str, str]]:
     return msgs
 
 
-def ingest_messages(messages: List[Dict[str, str]], source_label: Optional[str]) -> None:
+def ingest_messages(messages: List[Dict[str, str]], source_label: Optional[str], session_id: Optional[int] = None) -> None:
     if not messages:
         return
     payload = json.dumps({"messages": messages})
     run_ctx([
         "ingest", "--file", "-", "--format", "json",
+        *( ["--session-id", str(session_id)] if session_id is not None else [] ),
         *( ["--source", source_label] if source_label else [] ),
     ], input_data=payload)
 
 
+UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+
+
+def _iter_transcript_files(root: Path, source: str):
+    if not root.exists():
+        return
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            if not (f.endswith(".jsonl") or f.endswith(".json")):
+                continue
+            p = Path(dirpath) / f
+            if source == "claude":
+                if "subagents" in p.parts:
+                    continue
+                if f.endswith(".meta.json"):
+                    continue
+            yield p
+
+
+def _extract_uuid_like(text: str) -> Optional[str]:
+    m = UUID_RE.search(text)
+    return m.group(0) if m else None
+
+
+def _extract_codex_session_id(path: Path) -> Optional[str]:
+    try:
+        if path.suffix == ".json":
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                for key in ("id", "sessionId", "session_id"):
+                    if data.get(key):
+                        return str(data[key])
+        with path.open("r", encoding="utf-8") as fh:
+            for _ in range(8):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    for key in ("id", "sessionId", "session_id"):
+                        if obj.get(key):
+                            return str(obj[key])
+    except Exception:
+        pass
+    return _extract_uuid_like(path.name)
+
+
+def _extract_claude_session_id(path: Path) -> Optional[str]:
+    try:
+        if path.suffix == ".json":
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                if data.get("sessionId"):
+                    return str(data["sessionId"])
+                if isinstance(data.get("message"), dict) and data["message"].get("sessionId"):
+                    return str(data["message"]["sessionId"])
+        with path.open("r", encoding="utf-8") as fh:
+            for _ in range(40):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(obj, dict):
+                    if obj.get("sessionId"):
+                        return str(obj["sessionId"])
+                    if isinstance(obj.get("message"), dict) and obj["message"].get("sessionId"):
+                        return str(obj["message"]["sessionId"])
+    except Exception:
+        pass
+    stem_id = _extract_uuid_like(path.stem)
+    if stem_id:
+        return stem_id
+    return _extract_uuid_like(str(path.parent))
+
+
+def _extract_external_session_id(source: str, path: Path) -> Optional[str]:
+    if source == "codex":
+        return _extract_codex_session_id(path)
+    if source == "claude":
+        return _extract_claude_session_id(path)
+    return None
+
+
+def _load_transcript_candidate(source: str, path: Path) -> Optional[Dict[str, object]]:
+    if not path.exists():
+        return None
+    external_session_id = _extract_external_session_id(source, path)
+    if not external_session_id:
+        return None
+    try:
+        mtime = path.stat().st_mtime
+    except Exception:
+        mtime = 0.0
+    return {
+        "source": source,
+        "path": path,
+        "external_session_id": external_session_id,
+        "mtime": mtime,
+        "messages": _read_jsonl_messages(path),
+    }
+
+
+def _transcript_root(source: str) -> Path:
+    if source == "codex":
+        return _expanduser(os.getenv("CODEX_HOME", "~/.codex")) / "sessions"
+    if source == "claude":
+        return _expanduser(os.getenv("CLAUDE_HOME", "~/.claude")) / "projects"
+    raise ValueError(f"Unsupported source: {source}")
+
+
+def _latest_transcript_for_source(source: str) -> Optional[Dict[str, object]]:
+    p = _latest_jsonl_under(_transcript_root(source), source=source)
+    if not p:
+        return None
+    return _load_transcript_candidate(source, p)
+
+
+def _find_transcript_by_external_id(source: str, external_session_id: str) -> Optional[Dict[str, object]]:
+    root = _transcript_root(source)
+    for path in _iter_transcript_files(root, source):
+        candidate = _load_transcript_candidate(source, path)
+        if candidate and candidate["external_session_id"] == external_session_id:
+            return candidate
+    return None
+
+
 def find_latest_codex_transcript() -> Optional[Path]:
-    codex_home = _expanduser(os.getenv("CODEX_HOME", "~/.codex"))
-    sessions = codex_home / "sessions"
-    # Prefer files named transcript.jsonl if present; otherwise newest .jsonl
-    p = _latest_jsonl_under(sessions)
-    return p
+    return _latest_jsonl_under(_transcript_root("codex"), source="codex")
 
 
 def find_latest_claude_transcript() -> Optional[Path]:
-    claude_home = _expanduser(os.getenv("CLAUDE_HOME", "~/.claude"))
-    projects = claude_home / "projects"
-    p = _latest_jsonl_under(projects)
-    return p
+    return _latest_jsonl_under(_transcript_root("claude"), source="claude")
 
 
-def ingest_latest_from_codex(source_label: Optional[str] = None) -> bool:
-    p = find_latest_codex_transcript()
-    if not p:
+def _normalize_source(source: Optional[str]) -> Optional[str]:
+    if not source:
+        return None
+    s = str(source).strip().lower()
+    return s if s in {"codex", "claude"} else None
+
+
+def _ingest_candidate_for_workstream(
+    workstream: Dict[str, object],
+    session_id: int,
+    candidate: Dict[str, object],
+    *,
+    force_bind: bool = False,
+) -> bool:
+    source = str(candidate["source"])
+    external_session_id = str(candidate["external_session_id"])
+    owner = _external_owner(source, external_session_id)
+    if owner and int(owner["id"]) != int(workstream["id"]) and not force_bind:
+        print(
+            f"Skipping {source} transcript {external_session_id}: already linked to workstream {owner['slug']}",
+            file=sys.stderr,
+        )
         return False
-    msgs = _read_jsonl_messages(p)
-    ingest_messages(msgs, source_label or "codex")
-    return True
+
+    link = _workstream_source_link(int(workstream["id"]), source)
+    previous_count = int(link["message_count"]) if link else 0
+    messages = list(candidate["messages"])
+    if previous_count > len(messages):
+        previous_count = 0
+    delta = messages[previous_count:]
+    if delta:
+        ingest_messages(delta, source_label=source, session_id=session_id)
+    _upsert_workstream_source_link(
+        int(workstream["id"]),
+        source,
+        external_session_id,
+        Path(str(candidate["path"])),
+        float(candidate["mtime"]),
+        len(messages),
+    )
+    return bool(delta)
 
 
-def ingest_latest_from_claude(source_label: Optional[str] = None) -> bool:
-    p = find_latest_claude_transcript()
-    if not p:
+def _pull_source_for_workstream(
+    workstream: Dict[str, object],
+    session_id: int,
+    source: str,
+) -> bool:
+    source = _normalize_source(source)
+    if not source:
         return False
-    msgs = _read_jsonl_messages(p)
-    ingest_messages(msgs, source_label or "claude")
-    return True
+    link = _workstream_source_link(int(workstream["id"]), source)
+    candidate = None
+    if link:
+        linked_path = Path(link["transcript_path"]) if link["transcript_path"] else None
+        if linked_path and linked_path.exists():
+            candidate = _load_transcript_candidate(source, linked_path)
+            if candidate and candidate["external_session_id"] != link["external_session_id"]:
+                candidate = None
+        if candidate is None:
+            candidate = _find_transcript_by_external_id(source, str(link["external_session_id"]))
+        if candidate is None:
+            print(
+                f"No transcript found for linked {source} session {link['external_session_id']}",
+                file=sys.stderr,
+            )
+            return False
+        return _ingest_candidate_for_workstream(workstream, session_id, candidate)
+
+    candidate = _latest_transcript_for_source(source)
+    if candidate is None:
+        return False
+    return _ingest_candidate_for_workstream(workstream, session_id, candidate)
 
 
-def auto_pull() -> Tuple[bool, Optional[str]]:
-    pc = find_latest_codex_transcript()
-    pa = find_latest_claude_transcript()
-    candidates: List[Tuple[float, str, Path]] = []
-    if pc and pc.exists():
-        candidates.append((pc.stat().st_mtime, "codex", pc))
-    if pa and pa.exists():
-        candidates.append((pa.stat().st_mtime, "claude", pa))
+def _choose_initial_candidate(preferred_source: Optional[str]) -> Optional[Dict[str, object]]:
+    preferred = _normalize_source(preferred_source)
+    if preferred:
+        candidate = _latest_transcript_for_source(preferred)
+        if candidate:
+            return candidate
+    candidates = []
+    for source in ("codex", "claude"):
+        candidate = _latest_transcript_for_source(source)
+        if candidate:
+            candidates.append(candidate)
     if not candidates:
+        return None
+    candidates.sort(key=lambda c: float(c["mtime"]), reverse=True)
+    return candidates[0]
+
+
+def auto_pull(workstream: Dict[str, object], session_id: int, preferred_source: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+    links = _workstream_source_links(int(workstream["id"]))
+    if links:
+        pulled_sources: List[str] = []
+        any_updates = False
+        ordered_sources = [str(row["source"]) for row in links]
+        preferred = _normalize_source(preferred_source)
+        if preferred and preferred in ordered_sources:
+            ordered_sources = [preferred] + [s for s in ordered_sources if s != preferred]
+        for source in ordered_sources:
+            ok = _pull_source_for_workstream(workstream, session_id, source)
+            any_updates = any_updates or ok
+            pulled_sources.append(source)
+        return any_updates, ",".join(pulled_sources)
+
+    candidate = _choose_initial_candidate(preferred_source)
+    if candidate is None:
         return False, None
-    candidates.sort(key=lambda t: t[0], reverse=True)
-    who = candidates[0][1]
-    if who == "codex":
-        ok = ingest_latest_from_codex("codex")
-    else:
-        ok = ingest_latest_from_claude("claude")
-    return ok, who
+    ok = _ingest_candidate_for_workstream(workstream, session_id, candidate)
+    return ok, str(candidate["source"])
+
+
+def ingest_latest_from_codex(workstream: Dict[str, object], session_id: int) -> bool:
+    return _pull_source_for_workstream(workstream, session_id, "codex")
+
+
+def ingest_latest_from_claude(workstream: Dict[str, object], session_id: int) -> bool:
+    return _pull_source_for_workstream(workstream, session_id, "claude")
 
 
 def _env_truthy(name: str, default: bool) -> bool:
@@ -299,6 +670,7 @@ def main():
     p_go.add_argument("--focus")
     p_go.add_argument("--format", default="markdown", choices=["text", "markdown"])
     p_go.add_argument("--brief", action="store_true")
+    p_go.add_argument("--source", help="Preferred source to bind/pull when unlinked (claude or codex)")
     p_go.add_argument("--auto-pull", action="store_true", help="Import newest Codex/Claude transcript before emitting pack (default on; see CTX_AUTOPULL_DEFAULT)")
     p_go.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
 
@@ -327,10 +699,19 @@ def main():
     p_resume2.add_argument("--focus")
     p_resume2.add_argument("--format", default="markdown", choices=["text", "markdown"])
     p_resume2.add_argument("--brief", action="store_true")
+    p_resume2.add_argument("--source", help="Preferred source to bind/pull when unlinked (claude or codex)")
     p_resume2.add_argument("--pull-codex", action="store_true", help="Import latest Codex transcript into the latest session before emitting pack")
     p_resume2.add_argument("--pull-claude", action="store_true", help="Import latest Claude Code transcript into the latest session before emitting pack")
     p_resume2.add_argument("--auto-pull", action="store_true", help="Import the newest transcript between Codex and Claude before emitting pack (default on; see CTX_AUTOPULL_DEFAULT)")
     p_resume2.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
+
+    p_branch = sub.add_parser("branch", help="Create a new workstream seeded from an existing workstream's current context")
+    p_branch.add_argument("source_name", help="Existing source workstream slug or title")
+    p_branch.add_argument("target_name", help="New target workstream slug or title")
+    p_branch.add_argument("--agent", default=os.getenv("CTX_AGENT_DEFAULT", "other"))
+    p_branch.add_argument("--focus")
+    p_branch.add_argument("--format", default="markdown", choices=["text", "markdown"])
+    p_branch.add_argument("--brief", action="store_true")
 
     p_delete = sub.add_parser("delete", help="Delete a session by id, or delete the latest session in a workstream")
     p_delete.add_argument("name", nargs="?", help="Workstream slug or title; deletes the latest session in that workstream")
@@ -341,7 +722,7 @@ def main():
     p_pull.add_argument("--codex", action="store_true")
     p_pull.add_argument("--claude", action="store_true")
     p_pull.add_argument("--auto", action="store_true")
-    p_pull.add_argument("--source")
+    p_pull.add_argument("--source", help="Preferred source for --auto (claude or codex)")
 
     # Optional: set current workstream easily
     p_set = sub.add_parser("set", help="Set current workstream by slug or name (ensures if missing)")
@@ -388,38 +769,42 @@ def main():
     elif args.cmd == "go":
         ws = ensure_workstream(args.name, set_current=True)
         if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
-            auto_pull()
+            sid = ensure_session_for_workstream(ws)
+            auto_pull(ws, sid, preferred_source=args.source)
         sys.stdout.write(pack(ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
     elif args.cmd == "set":
         ws = ensure_workstream(args.name, set_current=True)
         sys.stdout.write(f"Current workstream: {ws['slug']} (id {ws['id']})\n")
     elif args.cmd == "pull":
-        # Pull transcripts into the latest session of the current workstream
-        sources: List[Tuple[str, Optional[str]]] = []
+        ws = current_workstream()
+        if not ws:
+            print("No current workstream set; run 'ctx set <name>' or use start/resume first.", file=sys.stderr)
+            return 2
+        sid = ensure_session_for_workstream(ws, agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"))
         if args.auto or (not args.codex and not args.claude):
-            ok, who = auto_pull()
+            ok, who = auto_pull(ws, sid, preferred_source=args.source)
             sys.stdout.write((who or "none") + ("\n" if ok else "\n"))
         else:
             if args.codex:
-                ingest_latest_from_codex(source_label=args.source)
+                ingest_latest_from_codex(ws, sid)
             if args.claude:
-                ingest_latest_from_claude(source_label=args.source)
+                ingest_latest_from_claude(ws, sid)
     elif args.cmd == "start":
         # Ensure workstream and create a fresh session
         ws = ensure_workstream(args.name, set_current=True)
-        create_session(agent=args.agent)
+        sid = create_session(agent=args.agent)
         if args.pull:
             args.copy_frontmost = True
             args.from_clipboard = True
         # Pull stored agent transcript(s) first so an explicit --pull of the
         # current chat becomes the freshest context in the new session.
         if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
-            auto_pull()
+            auto_pull(ws, sid, preferred_source=(args.source or args.agent))
         else:
             if args.pull_codex:
-                ingest_latest_from_codex(source_label=(args.source or "codex"))
+                ingest_latest_from_codex(ws, sid)
             if args.pull_claude:
-                ingest_latest_from_claude(source_label=(args.source or "claude"))
+                ingest_latest_from_claude(ws, sid)
         # Optional: capture clipboard (optionally copying from frontmost first)
         if args.copy_frontmost:
             # Best-effort: requires Accessibility permissions
@@ -440,10 +825,11 @@ def main():
         if args.from_clipboard:
             try:
                 clip = subprocess.check_output(["pbpaste"]).decode()
-                # Ingest clipboard into latest session of current workstream
+                # Ingest clipboard into the freshly created session.
                 run_ctx([
                     "ingest",
                     "--file", "-",
+                    "--session-id", str(sid),
                     "--format", ("markdown" if args.format == "markdown" else "auto"),
                     *( ["--source", args.source] if args.source else [] ),
                 ], input_data=clip)
@@ -454,15 +840,47 @@ def main():
         sys.stdout.write(pack(ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
     elif args.cmd == "resume":
         ws = ensure_workstream(args.name, set_current=True)
+        sid = ensure_session_for_workstream(ws, agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"))
         # Optionally pull before emitting
         if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
-            auto_pull()
+            auto_pull(ws, sid, preferred_source=args.source)
         else:
             if args.pull_codex:
-                ingest_latest_from_codex(source_label="codex")
+                ingest_latest_from_codex(ws, sid)
             if args.pull_claude:
-                ingest_latest_from_claude(source_label="claude")
+                ingest_latest_from_claude(ws, sid)
         sys.stdout.write(pack(ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
+    elif args.cmd == "branch":
+        source_ws = lookup_workstream(args.source_name)
+        if not source_ws:
+            print(f"Source workstream '{args.source_name}' not found", file=sys.stderr)
+            return 1
+        existing_target = lookup_workstream(args.target_name)
+        if existing_target:
+            print(
+                f"Target workstream '{args.target_name}' already exists; choose a new branch name",
+                file=sys.stderr,
+            )
+            return 1
+        seed = workstream_pack(source_ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief)
+        target_ws = ensure_workstream(args.target_name, set_current=True)
+        sid = create_session(agent=args.agent, title=f"Branch from {source_ws['slug']}")
+        branch_note = (
+            f"Branched from workstream [{source_ws['slug']}] into [{target_ws['slug']}].\n\n"
+            f"The snapshot below is the starting context for this branch. Future work in this branch should diverge independently.\n\n"
+            f"{seed}"
+        )
+        sys.stdout.write(
+            run_ctx([
+                "add",
+                str(sid),
+                "--type",
+                "note",
+                "--text",
+                "-",
+            ], input_data=branch_note)
+        )
+        sys.stdout.write(pack(target_ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
     elif args.cmd == "delete":
         if args.session_id is not None:
             sys.stdout.write(run_ctx(["session-delete", str(args.session_id)]))
@@ -559,6 +977,12 @@ def main():
                 *( ["--source", args.source] if args.source else [] ),
             ], input_data=clip)
         )
+    elif args.cmd is None:
+        ws = current_workstream()
+        if not ws:
+            sys.stdout.write("No current workstream set.\n")
+            return 0
+        sys.stdout.write(f"Current workstream: {ws['slug']} (id {ws['id']})\n")
     else:
         p.print_help()
         return 2

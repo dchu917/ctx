@@ -10,7 +10,9 @@ Features
 - Sessions: Create, list, show, and auto-link to a workstream.
 - Entries: Add notes, decisions, todos, files, links (stdin and snapshots supported).
 - Resume packs: Compact text/Markdown packs for pasting into any agent.
-- Agent commands: Claude Code skills plus `ctx-list`, `ctx-start`, and `ctx-resume` executables for Codex.
+- Stable transcript binding: A workstream can bind to the exact Claude and/or Codex conversation id it was started from, so later pulls do not drift to a newer chat.
+- Branching: Seed a new workstream from an existing workstream snapshot without sharing future transcript pulls.
+- Agent commands: Claude Code skills plus `ctx`, `ctx-list`, `ctx-start`, `ctx-resume`, `ctx-delete`, and `ctx-branch` executables for Codex.
 - Local-first: Pure stdlib, SQLite; no cloud or API keys. Global DB supported.
 
 Install (1-liner)
@@ -18,7 +20,7 @@ Install (1-liner)
 
 Run once locally to install a shared DB and `ctx` shim in `~/.contextfun` (no git needed):
 
-`curl -fsSL https://raw.githubusercontent.com/dchu917/contextfun/main/scripts/install.sh | bash`
+`curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/install.sh | bash`
 
 Agent bootstrap (1-liner)
 -------------------------
@@ -28,10 +30,10 @@ Paste this in Claude Code or Codex terminals to sync with your local DB/path:
 Two options depending on where you want the files:
 
 - Global (shared across all workspaces):
-  - `source <(curl -fsSL https://raw.githubusercontent.com/dchu917/contextfun/main/scripts/agent_bootstrap.sh)`
+  - `source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_bootstrap.sh)`
 
 - Project-local (download into ./ctx so it’s easy to package/export with the repo):
-  - `source <(curl -fsSL https://raw.githubusercontent.com/dchu917/contextfun/main/scripts/agent_setup_local_ctx.sh)`
+  - `source <(curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/agent_setup_local_ctx.sh)`
 
 Basic Usage
 -----------
@@ -106,7 +108,7 @@ That local setup does all of the following:
 
 - Creates `./.contextfun/context.db`
 - Writes `./ctx.env`
-- Installs repo-backed `ctx-list`, `ctx-start`, and `ctx-resume` shims into `~/.contextfun/bin`
+- Installs repo-backed `ctx`, `ctx-list`, `ctx-start`, `ctx-resume`, `ctx-delete`, and `ctx-branch` shims into `~/.contextfun/bin`
 - Links local skill folders into `~/.claude/skills` and `~/.codex/skills`
 
 Other setup modes:
@@ -120,24 +122,67 @@ Agent Commands
 Claude Code:
 
 - Restart Claude Code after running quickstart.
+- Use `/ctx` to see the current workstream
 - Use `/ctx list` to see workstreams with one-line goal/latest-task summaries
 - Use `/ctx start my-workstream --pull`
 - Use `/ctx resume my-workstream`
 - Use `/ctx delete my-workstream`
+- Use `/ctx branch source-workstream target-workstream`
+- Use `/branch source-workstream target-workstream` as a dedicated branch shortcut
 
 Codex:
 
 - Restart Codex after running quickstart.
+- Use `ctx` to see the current workstream
 - Use `ctx-list` to see workstreams with one-line goal/latest-task summaries
 - Use `ctx-start my-workstream`
 - Use `ctx-start --pull my-workstream`
 - Use `ctx-resume my-workstream`
 - Use `ctx-delete my-workstream`
+- Use `ctx-branch source-workstream target-workstream`
 
 Codex note:
 
 - Codex does not currently expose repo-defined custom slash commands like `/ctx-list`.
-- The supported Codex path is installed `ctx-*` executables plus the repo `AGENTS.md`.
+- The supported Codex path is installed `ctx` / `ctx-*` executables plus the repo `AGENTS.md`.
+
+How Transcript Linking Works
+---------------------------
+
+- `ctx` stores its own SQLite entities:
+  - `workstream`
+  - `session`
+  - `entry`
+- Transcript identity is tracked at the workstream level, not by guessing on every pull.
+- The first time a workstream pulls from Claude or Codex, `ctx` records:
+  - source: `claude` or `codex`
+  - exact external session id from the transcript file
+  - transcript path
+  - how many messages were already ingested
+- Later `start`, `resume`, and `pull` calls for that workstream reuse the exact same external conversation instead of switching to whichever transcript file is newest.
+- New messages are ingested incrementally from the linked transcript. Old messages are not re-ingested into every new ctx session.
+- A workstream can be linked to both one Claude conversation and one Codex conversation at the same time.
+
+What `--pull` Means
+-------------------
+
+- `--pull` is separate from transcript binding.
+- `ctx start my-workstream --pull` means:
+  - create a new ctx session
+  - copy the visible frontmost chat via Cmd+A / Cmd+C on macOS
+  - ingest that clipboard text into the new ctx session
+- `--pull` does not create or change the stable Claude/Codex transcript binding by itself.
+
+Branching
+---------
+
+- `ctx-branch source-workstream target-workstream`
+- Claude shortcuts:
+  - `/ctx branch source-workstream target-workstream`
+  - `/branch source-workstream target-workstream`
+- Branching creates a new target workstream and seeds it with a snapshot pack from the source workstream.
+- The target does not inherit the source workstream's Claude/Codex transcript binding.
+- After branching, future transcript pulls and new ctx sessions in the target are independent from the source.
 
 Agent Setup Tips
 ----------------
@@ -148,6 +193,25 @@ Agent Setup Tips
   - `git diff | ctx add-latest --type note --text -`
 - For per-agent defaults:
   - `export CTX_AGENT_WORKSTREAM="my-workstream"`
+
+Security Model
+--------------
+
+- `ctx` is a context/memory layer, not a sandbox.
+- Installing `ctx` does not reduce the shell permissions of Claude Code or Codex by itself.
+- The actual security boundary still comes from the agent runtime:
+  - Codex/Claude approval mode
+  - Codex/Claude filesystem sandbox settings
+  - the OS user account and file permissions
+  - Accessibility permissions for `--pull`
+- Recommended setup if you want tight controls:
+  - keep approvals enabled in the agent
+  - use workspace-scoped sandboxes where available
+  - only grant Accessibility permission if you need `--pull`
+  - use a dedicated repo or dedicated machine/user for sensitive work
+  - treat `ctx` transcript imports as local data access to `~/.claude/projects` and `~/.codex/sessions`
+- `ctx` does help reduce accidental context mixups by binding each workstream to exact Claude/Codex conversation ids after first pull.
+- See [SECURITY.md](SECURITY.md) for a short threat-model summary and recommended controls.
 
 Automation Helpers
 ------------------
@@ -169,6 +233,17 @@ Delete Sessions
 - Codex:
   - `ctx-delete my-workstream`
   - `ctx-delete --session-id 123`
+
+Branch Workstreams
+------------------
+
+- Core CLI:
+  - `python3 scripts/ctx_cmd.py branch source-workstream target-workstream --format markdown`
+- Claude Code:
+  - `/ctx branch source-workstream target-workstream`
+  - `/branch source-workstream target-workstream`
+- Codex:
+  - `ctx-branch source-workstream target-workstream`
 
 Notes:
 
@@ -280,6 +355,14 @@ Command Reference
   - `search <query>`
   - `export [--session-id <id>] [--out <file|-]>`
   - `import [--file <file|-]>`
+
+- Agent wrapper commands
+  - `ctx` — show the current workstream
+  - `ctx list`
+  - `ctx start <workstream> [--pull]`
+  - `ctx resume <workstream>`
+  - `ctx delete <workstream>` or `ctx delete --session-id <id>`
+  - `ctx branch <source-workstream> <target-workstream>`
 
 Design Notes
 ------------

@@ -7,7 +7,7 @@
 # @raycast.mode silent
 # @raycast.packageName ContextFun
 # @raycast.author ContextFun
-# @raycast.authorURL https://github.com/dchu917/contextfun
+# @raycast.authorURL https://github.com/dchu917/ctx
 # @raycast.argument1 {"type": "text", "placeholder": "workstream (optional)", "optional": true}
 # @raycast.description Resume a ContextFun workstream, auto-pull transcripts, copy pack, and paste status into the frontmost app.
 
@@ -28,4 +28,3 @@ fi
 osascript -e 'tell application "System Events" to keystroke "v" using {command down}'
 
 echo "ContextFun: resume triggered${NAME:+ for '$NAME'} (status pasted)."
-
