@@ -77,8 +77,8 @@ function repoDisplay(item) {
 
 function scopeFromUrl() {
   const url = new URL(window.location.href);
-  const scope = url.searchParams.get("scope") || "all";
-  return ["all", "current", "other"].includes(scope) ? scope : "all";
+  const scope = url.searchParams.get("scope") || "current";
+  return ["all", "current", "other"].includes(scope) ? scope : "current";
 }
 
 function setScopeInUrl(scope) {
@@ -204,6 +204,8 @@ function renderDetailPage(detail, listItem) {
   const ws = detail.workstream;
   const latest = detail.recent_entries[0]?.preview || listItem?.latest || "No recent task recorded yet.";
   const repo = repoDisplay(ws);
+  const guardedResume = ws.repo_relation === "other" ? `ctx resume ${ws.slug} --allow-other-repo` : `ctx resume ${ws.slug}`;
+  const guardedClaudeResume = ws.repo_relation === "other" ? `/ctx resume ${ws.slug} --allow-other-repo` : `/ctx resume ${ws.slug}`;
   const repoText =
     ws.repo_relation === "current"
       ? "This workstream matches the repo you are currently in."
@@ -242,9 +244,18 @@ function renderDetailPage(detail, listItem) {
         </div>
       </div>
 
+      ${
+        ws.repo_relation === "other"
+          ? `<div class="guardrail-note">
+              This workstream is linked to another repo. Resume is blocked by default here.
+              Use the explicit override only if you really want to continue it in this repo.
+            </div>`
+          : ""
+      }
+
       <div class="command-grid">
-        ${commandBlock("Continue In Claude Code", `/ctx resume ${ws.slug}`)}
-        ${commandBlock("Continue In Codex", `ctx resume ${ws.slug}`)}
+        ${commandBlock("Continue In Claude Code", guardedClaudeResume)}
+        ${commandBlock("Continue In Codex", guardedResume)}
       </div>
 
       <section class="detail-section">

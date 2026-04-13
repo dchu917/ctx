@@ -36,6 +36,7 @@ Supported chat-style commands in this repo:
   - Run `ctx resume <workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py resume <workstream> --format markdown`.
   - `resume` means continue an existing workstream. If the workstream does not exist, tell the user to use `ctx start <workstream>` instead.
+  - If the workstream belongs to a different repo, `ctx resume` should fail unless the user explicitly adds `--allow-other-repo`.
   - Do not paste the full ctx pack back unless the user asks for it.
   - Summarize the loaded workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.
   - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
@@ -53,6 +54,7 @@ Supported chat-style commands in this repo:
 - `ctx branch <source-workstream> <target-workstream>`
   - Run `ctx branch <source-workstream> <target-workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py branch <source-workstream> <target-workstream> --format markdown`.
+  - If the source workstream belongs to a different repo, `ctx branch` should fail unless the user explicitly adds `--allow-other-repo`.
   - This creates a new workstream seeded from the source workstream snapshot, but future transcript pulls stay independent.
   - Do not paste the full ctx pack back unless the user asks for it.
   - Summarize the new branch briefly, mention the latest inherited context, and ask how the user wants to proceed.

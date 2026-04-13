@@ -266,9 +266,10 @@ Repo awareness:
 - `ctx list --this-repo` shows only workstreams linked to the current repo
 - `ctx search <query> --this-repo` searches only workstreams linked to the current repo
 - workstreams from other repos stay visible, but they are labeled with their source repo such as `[repo: spatial-fun]`
-- `ctx resume <name>` shows an explicit warning if that workstream was originally in a different repo than the one you are currently in
+- `ctx resume <name>` is blocked if that workstream belongs to another repo; use `ctx resume <name> --allow-other-repo` only if you really mean it
+- `ctx branch <source> <target>` is also blocked across repos unless you add `--allow-other-repo`
 - for older workstreams created before repo capture was wired, `ctx` tries to infer the repo from saved `cwd` / `workdir` traces in the stored context
-- the browser UI now has the same repo filter, so you can switch between all repos, this repo, and other repos
+- the browser UI defaults to `This repo` and has the same repo filter, so you can switch between all repos, this repo, and other repos
 
 Load curation:
 

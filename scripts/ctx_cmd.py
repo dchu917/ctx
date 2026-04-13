@@ -342,6 +342,33 @@ def _create_session_for_workstream(workstream: Dict[str, object], agent: Optiona
     return sid
 
 
+def _workstream_repo_info(workstream: Dict[str, object]) -> Tuple[str, str]:
+    ws_row = _workstream_row_by_slug(str(workstream["slug"]))
+    if not ws_row:
+        return "", "unknown"
+    with _connect_db() as conn:
+        workspace = _effective_workspace_for_workstream(conn, ws_row)
+    relation = _workspace_relation(_invocation_workspace(), workspace)
+    return workspace, relation
+
+
+def _assert_repo_guard(workstream: Dict[str, object], *, allow_other_repo: bool, override_command: str) -> None:
+    workspace, relation = _workstream_repo_info(workstream)
+    current_workspace = _invocation_workspace()
+    if relation != "other" or allow_other_repo:
+        return
+    repo_label = workspace or "unknown repo"
+    print(
+        (
+            f"Workstream '{workstream['slug']}' belongs to another repo: {repo_label}\n"
+            f"Current repo: {current_workspace}\n"
+            f"Use '{override_command} --allow-other-repo' if you really want to continue here."
+        ),
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
 def _session_rows_for_workstream(workstream_id: int) -> List[sqlite3.Row]:
     db = _db_path()
     if not db.exists():
@@ -1456,6 +1483,7 @@ def main():
     p_go.add_argument("--source", help="Preferred source to bind/pull when unlinked (claude or codex)")
     p_go.add_argument("--auto-pull", action="store_true", help="Import newest Codex/Claude transcript before emitting pack (default on; see CTX_AUTOPULL_DEFAULT)")
     p_go.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
+    p_go.add_argument("--allow-other-repo", action="store_true", help="Allow resuming a workstream that belongs to a different repo")
     p_go.add_argument("--compress", action="store_true", help="Use a compressed pack instead of the full load")
     p_go.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
 
@@ -1491,6 +1519,7 @@ def main():
     p_resume2.add_argument("--pull-claude", action="store_true", help="Import latest Claude Code transcript into the latest session before emitting pack")
     p_resume2.add_argument("--auto-pull", action="store_true", help="Import the newest transcript between Codex and Claude before emitting pack (default on; see CTX_AUTOPULL_DEFAULT)")
     p_resume2.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
+    p_resume2.add_argument("--allow-other-repo", action="store_true", help="Allow resuming a workstream that belongs to a different repo")
     p_resume2.add_argument("--compress", action="store_true", help="Use a compressed pack instead of the full load")
     p_resume2.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
 
@@ -1501,6 +1530,7 @@ def main():
     p_branch.add_argument("--focus")
     p_branch.add_argument("--format", default="markdown", choices=["text", "markdown"])
     p_branch.add_argument("--brief", action="store_true")
+    p_branch.add_argument("--allow-other-repo", action="store_true", help="Allow branching from a workstream that belongs to a different repo")
     p_branch.add_argument("--compress", action="store_true", help="Use a compressed pack instead of the full load")
     p_branch.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
 
@@ -1590,7 +1620,14 @@ def main():
         )
     elif args.cmd == "go":
         compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
-        ws = require_workstream(args.name, set_current=True)
+        ws = require_workstream(args.name, set_current=False)
+        _assert_repo_guard(
+            ws,
+            allow_other_repo=getattr(args, "allow_other_repo", False),
+            override_command=f"ctx resume {ws['slug']}",
+        )
+        run_ctx(["workstream-set-current", "--slug", str(ws["slug"])])
+        ws = current_workstream() or ws
         sid, action_label, initial_candidate = _select_resume_session(
             ws,
             preferred_source=args.source,
@@ -1714,7 +1751,14 @@ def main():
         )
     elif args.cmd == "resume":
         compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
-        ws = require_workstream(args.name, set_current=True)
+        ws = require_workstream(args.name, set_current=False)
+        _assert_repo_guard(
+            ws,
+            allow_other_repo=getattr(args, "allow_other_repo", False),
+            override_command=f"ctx resume {ws['slug']}",
+        )
+        run_ctx(["workstream-set-current", "--slug", str(ws["slug"])])
+        ws = current_workstream() or ws
         sid, action_label, initial_candidate = _select_resume_session(
             ws,
             preferred_source=args.source,
@@ -1745,6 +1789,11 @@ def main():
         if not source_ws:
             print(f"Source workstream '{args.source_name}' not found", file=sys.stderr)
             return 1
+        _assert_repo_guard(
+            source_ws,
+            allow_other_repo=getattr(args, "allow_other_repo", False),
+            override_command=f"ctx branch {args.source_name} {args.target_name}",
+        )
         existing_target = lookup_workstream(args.target_name)
         if existing_target:
             print(

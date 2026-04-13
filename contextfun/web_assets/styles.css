@@ -138,6 +138,15 @@ h2 {
   color: #ffffff;
 }
 
+.guardrail-note {
+  padding: 12px 14px;
+  border: 1px solid #ead8bf;
+  border-radius: var(--radius-sm);
+  background: #fcf7ef;
+  color: #7b4a16;
+  line-height: 1.5;
+}
+
 input {
   width: 100%;
   padding: 12px 14px;
