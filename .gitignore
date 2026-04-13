@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+
+# Environments
+.venv/
+venv/
+.env
+
+# OS / Editors
+.DS_Store
+.idea/
+.vscode/
+
+# Local data store (created at runtime)
+.contextfun/
+
+# Build artifacts
+build/
+dist/
+
