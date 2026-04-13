@@ -48,6 +48,8 @@ ctx web --open
 
 Run `ctx web --open` in the terminal or in the agent shell.
 
+Terminal demo video: [docs/ctx-demo.mp4](docs/ctx-demo.mp4)
+
 3. Start a new workstream:
 
 Claude Code:
@@ -155,6 +157,7 @@ What the frontend gives you:
 - a dedicated page for each workstream at `/workstreams/<slug>`
 - the exact Claude and Codex commands to continue that workstream
 - a simple rename control in the detail view
+- a separate scripted terminal demo video is available at [docs/ctx-demo.mp4](docs/ctx-demo.mp4)
 
 Frontend note:
 
