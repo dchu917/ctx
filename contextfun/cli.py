@@ -990,11 +990,15 @@ def _maybe_refresh_search_index(conn: sqlite3.Connection) -> None:
                 raise
 
 
-def _fts_query(query: str) -> str:
-    tokens = re.findall(r"[A-Za-z0-9_./:-]+", query or "")
+def _fts_tokens(query: str) -> list[str]:
+    return re.findall(r"[A-Za-z0-9_./:-]+", query or "")
+
+
+def _fts_query(tokens: list[str], operator: str = "AND") -> str:
     if not tokens:
         return ""
-    return " AND ".join(f'"{t}"' for t in tokens)
+    joiner = f" {operator.strip().upper()} "
+    return joiner.join(f'"{t}"' for t in tokens)
 
 
 def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
@@ -1272,22 +1276,33 @@ def cmd_search(args: argparse.Namespace):
     db = Path(args.db)
     init_db(db, quiet=True)
     with connect(db) as conn:
-        fts_q = _fts_query(args.query)
+        tokens = _fts_tokens(args.query)
+        fts_q = _fts_query(tokens, "AND")
         if _table_exists(conn, "search_index") and fts_q:
-            rows = conn.execute(
-                """
-                SELECT
-                    kind, workstream_id, session_id, entry_id, workstream_slug, workstream_title,
-                    session_title, created_at,
-                    snippet(search_index, 7, '[', ']', ' … ', 16) AS snippet,
-                    bm25(search_index, 1.0, 0.0, 0.0, 0.0, 5.0, 4.0, 3.0, 1.0, 1.0, 0.0) AS score
-                FROM search_index
-                WHERE search_index MATCH ?
-                ORDER BY score ASC
-                LIMIT ?
-                """,
-                (fts_q, max(args.limit * 4, 12)),
-            ).fetchall()
+            def _fts_rows(match_q: str):
+                return conn.execute(
+                    """
+                    SELECT
+                        kind, workstream_id, session_id, entry_id, workstream_slug, workstream_title,
+                        session_title, created_at,
+                        snippet(search_index, 7, '[', ']', ' … ', 16) AS snippet,
+                        bm25(search_index, 1.0, 0.0, 0.0, 0.0, 5.0, 4.0, 3.0, 1.0, 1.0, 0.0) AS score
+                    FROM search_index
+                    WHERE search_index MATCH ?
+                    ORDER BY score ASC
+                    LIMIT ?
+                    """,
+                    (match_q, max(args.limit * 4, 12)),
+                ).fetchall()
+
+            rows = _fts_rows(fts_q)
+            search_mode = "strict"
+            if not rows and len(tokens) > 1:
+                loose_q = _fts_query(tokens, "OR")
+                if loose_q and loose_q != fts_q:
+                    rows = _fts_rows(loose_q)
+                    if rows:
+                        search_mode = "loose-or"
             if not rows:
                 print("No matches")
                 return
@@ -1316,6 +1331,9 @@ def cmd_search(args: argparse.Namespace):
                     g["snippet"] = row["snippet"]
                     g["kind"] = row["kind"]
 
+            if search_mode == "loose-or":
+                print("Search mode: loose OR fallback")
+                print("")
             print("Top workstreams:")
             top_groups = sorted(grouped.items(), key=lambda item: (float(item[1]["score"]), -int(item[1]["hits"])))[: args.limit]
             for wsid, info in top_groups:
