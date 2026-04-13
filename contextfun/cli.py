@@ -14,7 +14,7 @@ DEFAULT_HOME = Path.cwd() / ".contextfun"
 DEFAULT_DB = DEFAULT_HOME / "context.db"
 ATTACH_DIR = DEFAULT_HOME / "attachments"
 CURRENT_FILE = DEFAULT_HOME / "current.json"
-SEARCH_INDEX_VERSION = "4"
+SEARCH_INDEX_VERSION = "5"
 SEARCH_INDEX_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
     kind UNINDEXED,
@@ -557,6 +557,13 @@ def _delete_session_attachments(db_path: Path, session_id: int) -> None:
             shutil.rmtree(root, ignore_errors=True)
 
 
+def _delete_entry_attachments(db_path: Path, session_id: int, entry_id: int) -> None:
+    for root in _attachment_roots_for_session(db_path, session_id):
+        target = root / str(entry_id)
+        if target.exists():
+            shutil.rmtree(target, ignore_errors=True)
+
+
 def cmd_session_delete(args: argparse.Namespace):
     db = Path(args.db)
     init_db(db, quiet=True)
@@ -578,6 +585,54 @@ def cmd_session_delete(args: argparse.Namespace):
 
     workstream = f" #{row['workstream_slug']}" if row["workstream_slug"] else ""
     print(f"Deleted session {row['id']}: {row['title']}{workstream}")
+
+
+def cmd_entry_load(args: argparse.Namespace):
+    db = Path(args.db)
+    init_db(db, quiet=True)
+    with connect(db) as conn:
+        row = conn.execute(
+            """
+            SELECT e.id, e.session_id, s.workstream_id, w.slug AS workstream_slug
+            FROM entry e
+            JOIN session s ON s.id = e.session_id
+            LEFT JOIN workstream w ON w.id = s.workstream_id
+            WHERE e.id = ?
+            """,
+            (args.id,),
+        ).fetchone()
+        if not row:
+            print(f"Entry {args.id} not found", file=sys.stderr)
+            sys.exit(1)
+        _set_entry_load_behavior(conn, args.id, args.mode)
+        conn.commit()
+    print(f"Entry {args.id} load behavior set to {args.mode}")
+
+
+def cmd_entry_delete(args: argparse.Namespace):
+    db = Path(args.db)
+    init_db(db, quiet=True)
+    with connect(db) as conn:
+        row = conn.execute(
+            """
+            SELECT e.id, e.session_id, e.type, s.workstream_id, w.slug AS workstream_slug
+            FROM entry e
+            JOIN session s ON s.id = e.session_id
+            LEFT JOIN workstream w ON w.id = s.workstream_id
+            WHERE e.id = ?
+            """,
+            (args.id,),
+        ).fetchone()
+        if not row:
+            print(f"Entry {args.id} not found", file=sys.stderr)
+            sys.exit(1)
+        _delete_search_docs_for_entry(conn, int(args.id))
+        conn.execute("DELETE FROM entry WHERE id = ?", (args.id,))
+        conn.commit()
+
+    _delete_entry_attachments(db, int(row["session_id"]), args.id)
+    workstream = f" #{row['workstream_slug']}" if row["workstream_slug"] else ""
+    print(f"Deleted entry {row['id']} ({row['type']}){workstream}")
 
 
 def _resolve_workstream_id(conn: sqlite3.Connection, *, slug=None, wid=None) -> int:
@@ -853,9 +908,81 @@ def _entry_extras_search_text(extras) -> str:
     filtered = {
         k: v
         for k, v in extras.items()
-        if k not in {"source", "role", "attachment", "source_file"}
+        if k not in {"source", "role", "attachment", "source_file", "load_behavior"}
     }
     return " ".join(_flatten_search_text(filtered))
+
+
+def _entry_extras_dict(raw) -> dict:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return dict(raw)
+    if isinstance(raw, sqlite3.Row):
+        value = raw["extras"] if "extras" in raw.keys() else None
+    else:
+        value = raw
+    if not value:
+        return {}
+    try:
+        data = json.loads(value)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _entry_load_behavior(raw) -> str:
+    extras = _entry_extras_dict(raw)
+    mode = str(extras.get("load_behavior") or "default").strip().lower()
+    return mode if mode in {"default", "pin", "exclude"} else "default"
+
+
+def _entry_is_excluded_from_load(raw) -> bool:
+    return _entry_load_behavior(raw) == "exclude"
+
+
+def _entry_is_pinned_for_load(raw) -> bool:
+    return _entry_load_behavior(raw) == "pin"
+
+
+def _entry_role(raw) -> str:
+    extras = _entry_extras_dict(raw)
+    role = str(extras.get("role") or "").strip().lower()
+    return role
+
+
+def _entry_display_label(raw) -> str:
+    entry_type = ""
+    if isinstance(raw, sqlite3.Row) and "type" in raw.keys():
+        entry_type = str(raw["type"] or "").strip().lower()
+    elif isinstance(raw, dict):
+        entry_type = str(raw.get("type") or "").strip().lower()
+    role = _entry_role(raw)
+    if role and role not in {"", entry_type}:
+        return f"{entry_type}/{role}" if entry_type else role
+    return entry_type or role or "note"
+
+
+def _set_entry_load_behavior(conn: sqlite3.Connection, entry_id: int, mode: str) -> dict:
+    normalized = str(mode or "").strip().lower()
+    if normalized not in {"default", "pin", "exclude"}:
+        print(f"Unsupported load behavior: {mode}", file=sys.stderr)
+        sys.exit(2)
+    row = conn.execute("SELECT * FROM entry WHERE id = ?", (entry_id,)).fetchone()
+    if not row:
+        print(f"Entry {entry_id} not found", file=sys.stderr)
+        sys.exit(1)
+    extras = _entry_extras_dict(row)
+    if normalized == "default":
+        extras.pop("load_behavior", None)
+    else:
+        extras["load_behavior"] = normalized
+    conn.execute(
+        "UPDATE entry SET extras = ? WHERE id = ?",
+        (json.dumps(extras) if extras else None, entry_id),
+    )
+    _index_entry(conn, int(entry_id))
+    return extras
 
 
 def _delete_search_docs_for_workstream(conn: sqlite3.Connection, workstream_id: int) -> None:
@@ -1109,6 +1236,87 @@ def _fts_query(tokens: list[str], operator: str = "AND") -> str:
     return joiner.join(f'"{t}"' for t in tokens)
 
 
+def _load_control_counts(conn: sqlite3.Connection, workstream_id: int) -> tuple[int, int]:
+    rows = conn.execute(
+        """
+        SELECT e.extras
+        FROM entry e
+        JOIN session s ON s.id = e.session_id
+        WHERE s.workstream_id = ?
+        """,
+        (workstream_id,),
+    ).fetchall()
+    pinned = 0
+    excluded = 0
+    for row in rows:
+        mode = _entry_load_behavior(row)
+        if mode == "pin":
+            pinned += 1
+        elif mode == "exclude":
+            excluded += 1
+    return pinned, excluded
+
+
+def _pack_entry_groups(
+    conn: sqlite3.Connection,
+    workstream_id: int,
+    session_ids: list[int],
+    *,
+    max_entries: int,
+    focus: set[str] | None,
+) -> tuple[list[sqlite3.Row], list[sqlite3.Row], int, int]:
+    pinned_rows_all = conn.execute(
+        """
+        SELECT e.*, s.title AS session_title
+        FROM entry e
+        JOIN session s ON s.id = e.session_id
+        WHERE s.workstream_id = ?
+        ORDER BY e.id DESC
+        """,
+        (workstream_id,),
+    ).fetchall()
+    pinned_entries: list[sqlite3.Row] = []
+    excluded_count = 0
+    for row in pinned_rows_all:
+        if focus and row["type"] not in focus:
+            continue
+        mode = _entry_load_behavior(row)
+        if mode == "exclude":
+            excluded_count += 1
+            continue
+        if mode == "pin":
+            pinned_entries.append(row)
+
+    recent_entries: list[sqlite3.Row] = []
+    if session_ids:
+        marks = ",".join("?" for _ in session_ids)
+        rows = conn.execute(
+            f"""
+            SELECT e.*, s.title AS session_title
+            FROM entry e
+            JOIN session s ON s.id = e.session_id
+            WHERE e.session_id IN ({marks})
+            ORDER BY e.id DESC
+            LIMIT ?
+            """,
+            (*session_ids, max(max_entries * 10, 120)),
+        ).fetchall()
+        pinned_ids = {int(row["id"]) for row in pinned_entries}
+        for row in rows:
+            if focus and row["type"] not in focus:
+                continue
+            mode = _entry_load_behavior(row)
+            if mode == "exclude":
+                continue
+            if int(row["id"]) in pinned_ids or mode == "pin":
+                continue
+            recent_entries.append(row)
+            if len(recent_entries) >= max_entries:
+                break
+
+    return pinned_entries, recent_entries, len(pinned_entries), excluded_count
+
+
 def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
     goal = row["title"]
     if row["metadata"]:
@@ -1128,7 +1336,7 @@ def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> 
         (row["id"],),
     ).fetchone()
     latest_entries = conn.execute(
-        "SELECT e.content FROM entry e "
+        "SELECT e.content, e.extras FROM entry e "
         "JOIN session s ON s.id = e.session_id "
         "WHERE s.workstream_id = ? ORDER BY e.id DESC LIMIT 20",
         (row["id"],),
@@ -1138,11 +1346,18 @@ def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> 
     if latest_session and latest_session["title"] not in {"New session", "Auto-ingest session"}:
         latest_task = latest_session["title"]
     for latest_entry in latest_entries:
+        if _entry_is_excluded_from_load(latest_entry):
+            continue
         if latest_entry["content"] and not _looks_like_ctx_noise(latest_entry["content"]):
             latest_task = _preview_text(latest_entry["content"], limit=90) or latest_task
             break
-    if not latest_task and latest_entries and latest_entries[0]["content"]:
-        latest_task = _preview_text(latest_entries[0]["content"], limit=90) or latest_task
+    if not latest_task:
+        for latest_entry in latest_entries:
+            if _entry_is_excluded_from_load(latest_entry):
+                continue
+            if latest_entry["content"]:
+                latest_task = _preview_text(latest_entry["content"], limit=90) or latest_task
+                break
     if not latest_task and latest_session:
         latest_task = latest_session["title"]
     if not latest_task:
@@ -1237,21 +1452,20 @@ def cmd_pack(args: argparse.Namespace):
             "SELECT * FROM session WHERE workstream_id = ? ORDER BY id DESC LIMIT ?",
             (wid, args.max_sessions),
         ).fetchall()
-        # Compile entries newest first across included sessions, up to max_entries
+        # Compile recent entries newest first across included sessions, while
+        # honoring per-entry load controls. Pinned entries are gathered across
+        # the full workstream so important older context can still load.
         session_ids = [s["id"] for s in sessions]
-        entries: list[sqlite3.Row] = []
-        if session_ids:
-            q_marks = ",".join(["?"] * len(session_ids))
-            entries = conn.execute(
-                f"SELECT * FROM entry WHERE session_id IN ({q_marks}) ORDER BY id DESC LIMIT ?",
-                (*session_ids, args.max_entries),
-            ).fetchall()
-
-    # Focus filter
-    focus = None
-    if args.focus:
-        focus = {t.strip() for t in args.focus.split(",") if t.strip()}
-        entries = [e for e in entries if e["type"] in focus]
+        focus = None
+        if args.focus:
+            focus = {t.strip() for t in args.focus.split(",") if t.strip()}
+        pinned_entries, recent_entries, pinned_count, excluded_count = _pack_entry_groups(
+            conn,
+            int(wid),
+            session_ids,
+            max_entries=args.max_entries,
+            focus=focus,
+        )
 
     # Emit text or markdown
     if args.format == "markdown":
@@ -1268,22 +1482,33 @@ def cmd_pack(args: argparse.Namespace):
             if w["tags"]:
                 meta.append(f"Tags: `{w['tags']}`")
             lines.append(" | ".join(meta))
+        if pinned_count or excluded_count:
+            lines.append("")
+            lines.append(f"Load controls: {pinned_count} pinned | {excluded_count} excluded")
+        if pinned_entries:
+            lines.append("")
+            lines.append("## Pinned context")
+            for e in pinned_entries:
+                preview = (e["content"] or "").strip()
+                if len(preview) > 500:
+                    preview = preview[:497] + "..."
+                lines.append(f"- E{e['id']} S{e['session_id']} `{_entry_display_label(e)}`:\n\n  {preview}")
         if not args.brief:
             lines.append("")
             lines.append("## Recent sessions")
             for s in sessions:
                 lines.append(f"- S{s['id']}: {s['title']} (@{s['agent'] or 'n/a'}) [{s['tags'] or ''}] — {s['created_at']}")
-            if entries:
+            if recent_entries:
                 lines.append("")
                 title = "## Recent entries"
                 if focus:
                     title += f" (types: {', '.join(sorted(focus))})"
                 lines.append(title)
-                for e in entries:
+                for e in recent_entries:
                     preview = (e["content"] or "").strip()
                     if len(preview) > 500:
                         preview = preview[:497] + "..."
-                    lines.append(f"- E{e['id']} S{e['session_id']} `{e['type']}`:\n\n  {preview}")
+                    lines.append(f"- E{e['id']} S{e['session_id']} `{_entry_display_label(e)}`:\n\n  {preview}")
         print("\n".join(lines))
     else:
         lines = []
@@ -1294,18 +1519,29 @@ def cmd_pack(args: argparse.Namespace):
             lines.append(f"Tags: {w['tags']}")
         if w["description"]:
             lines.append(f"Description: {w['description']}")
+        if pinned_count or excluded_count:
+            lines.append(f"Load controls: {pinned_count} pinned | {excluded_count} excluded")
+        if pinned_entries:
+            lines.append("")
+            lines.append("Pinned context:")
+            for e in pinned_entries:
+                preview = (e["content"] or "").strip().replace("\n", " ")
+                if len(preview) > 160:
+                    preview = preview[:157] + "..."
+                lines.append(f"- E{e['id']} S{e['session_id']} {_entry_display_label(e)}: {preview}")
         if not args.brief:
             lines.append("")
             lines.append("Recent sessions:")
             for s in sessions:
                 lines.append(f"- S{s['id']}: {s['title']} @{s['agent'] or 'n/a'} [{s['tags'] or ''}] - {s['created_at']}")
-            lines.append("")
-            lines.append("Recent entries:" + (f" (types: {', '.join(sorted(focus))})" if focus else ""))
-            for e in entries:
-                preview = (e["content"] or "").strip().replace("\n", " ")
-                if len(preview) > 160:
-                    preview = preview[:157] + "..."
-                lines.append(f"- E{e['id']} S{e['session_id']} {e['type']}: {preview}")
+            if recent_entries:
+                lines.append("")
+                lines.append("Recent entries:" + (f" (types: {', '.join(sorted(focus))})" if focus else ""))
+                for e in recent_entries:
+                    preview = (e["content"] or "").strip().replace("\n", " ")
+                    if len(preview) > 160:
+                        preview = preview[:157] + "..."
+                    lines.append(f"- E{e['id']} S{e['session_id']} {_entry_display_label(e)}: {preview}")
         print("\n".join(lines))
 
 
@@ -1899,6 +2135,19 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(p_s_del)
     p_s_del.add_argument("id", type=int, help="Session id")
     p_s_del.set_defaults(func=cmd_session_delete)
+
+    # entry load behavior
+    p_e_load = sp.add_parser("entry-load", help="Set whether an entry is loaded by future packs")
+    add_common_args(p_e_load)
+    p_e_load.add_argument("id", type=int, help="Entry id")
+    p_e_load.add_argument("mode", choices=["default", "pin", "exclude"], help="Load behavior")
+    p_e_load.set_defaults(func=cmd_entry_load)
+
+    # entry delete
+    p_e_del = sp.add_parser("entry-delete", help="Delete a single entry by id")
+    add_common_args(p_e_del)
+    p_e_del.add_argument("id", type=int, help="Entry id")
+    p_e_del.set_defaults(func=cmd_entry_delete)
 
     # add entry
     p_add = sp.add_parser("add", help="Add an entry to a session")

@@ -260,6 +260,55 @@ input {
   margin-bottom: 8px;
 }
 
+.recent-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pill.load.pin {
+  background: #eef5e8;
+  color: #2a5b20;
+}
+
+.pill.load.exclude {
+  background: #f8ece9;
+  color: #8d3a2c;
+}
+
+.entry-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.entry-button {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.entry-button:hover {
+  background: #fafaf8;
+}
+
+.entry-button.danger {
+  color: #8d3a2c;
+}
+
+.recent-item.is-excluded {
+  opacity: 0.82;
+  background: #fcfbf9;
+}
+
 .empty-state {
   padding: 20px;
   border-radius: var(--radius-md);

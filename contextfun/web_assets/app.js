@@ -112,14 +112,30 @@ function commandBlock(label, command) {
 }
 
 function recentItem(entry) {
+  const role = entry.role ? ` / ${entry.role}` : "";
+  const mode = entry.load_behavior || "default";
   return `
-    <article class="recent-item">
+    <article class="recent-item ${mode === "exclude" ? "is-excluded" : ""}">
       <div class="recent-head">
-        <strong>S${entry.session_id} ${escapeHtml(entry.type)}</strong>
-        <span class="muted">${escapeHtml(formatDate(entry.created_at))}</span>
+        <strong>S${entry.session_id} ${escapeHtml(entry.type)}${escapeHtml(role)}</strong>
+        <div class="recent-meta">
+          <span class="pill load ${escapeHtml(mode)}">${escapeHtml(mode)}</span>
+          <span class="muted">${escapeHtml(formatDate(entry.created_at))}</span>
+        </div>
       </div>
       <div class="muted">${escapeHtml(entry.session_title)}</div>
       <div class="value">${escapeHtml(entry.preview)}</div>
+      <div class="entry-controls">
+        <button type="button" class="entry-button" data-load-mode="${escapeHtml(mode === "pin" ? "default" : "pin")}" data-entry-id="${entry.id}">
+          ${mode === "pin" ? "Unpin" : "Pin"}
+        </button>
+        <button type="button" class="entry-button" data-load-mode="${escapeHtml(mode === "exclude" ? "default" : "exclude")}" data-entry-id="${entry.id}">
+          ${mode === "exclude" ? "Include" : "Exclude"}
+        </button>
+        <button type="button" class="entry-button danger" data-entry-delete="${entry.id}">
+          Delete
+        </button>
+      </div>
     </article>
   `;
 }
@@ -167,10 +183,12 @@ function renderDetailPage(detail, listItem) {
 
       <section class="detail-section">
         <p class="label">Recent Context</p>
+        <p class="panel-note">Pinned entries always load in future ctx packs. Excluded entries stay saved and searchable, but they will not be loaded next time.</p>
+        <p class="panel-note">${ws.pinned_count || 0} pinned · ${ws.excluded_count || 0} excluded</p>
         <div class="recent-list">
           ${
             detail.recent_entries.length
-              ? detail.recent_entries.slice(0, 6).map(recentItem).join("")
+              ? detail.recent_entries.map(recentItem).join("")
               : `<div class="empty-state">No recent context saved yet.</div>`
           }
         </div>
@@ -199,6 +217,32 @@ function renderDetailPage(detail, listItem) {
       slugifyForPath(newName);
     window.history.pushState({}, "", `/workstreams/${encodeURIComponent(nextSlug)}`);
     boot().catch(showError);
+  });
+
+  document.querySelectorAll("[data-load-mode]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const entryId = Number(button.getAttribute("data-entry-id"));
+      const mode = button.getAttribute("data-load-mode");
+      await api("/api/entries/load-behavior", {
+        method: "POST",
+        body: JSON.stringify({ entry_id: entryId, mode }),
+      });
+      boot().catch(showError);
+    });
+  });
+
+  document.querySelectorAll("[data-entry-delete]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const entryId = Number(button.getAttribute("data-entry-delete"));
+      if (!window.confirm(`Delete saved entry ${entryId}? This cannot be undone.`)) {
+        return;
+      }
+      await api("/api/entries/delete", {
+        method: "POST",
+        body: JSON.stringify({ entry_id: entryId }),
+      });
+      boot().catch(showError);
+    });
   });
 }
 

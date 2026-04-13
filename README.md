@@ -26,6 +26,7 @@ Claude Code chat          Codex chat
 - No transcript drift: later pulls stay on that bound conversation instead of jumping to the newest chat on disk.
 - Safe branching: start a new workstream from the current state of another one without sharing future transcript pulls or hijacking the source conversation.
 - Indexed retrieval: saved workstreams, sessions, and entries are indexed for fast `ctx search` lookup.
+- Curated loads: pin saved entries so they always load, exclude saved entries so they stay searchable but stop getting passed back to the model, or delete them entirely.
 - Local-first: no API keys, no hosted service, plain SQLite plus local files.
 
 ## 4-Step Demo
@@ -155,6 +156,10 @@ What the frontend gives you:
 - a dedicated page for each workstream at `/workstreams/<slug>`
 - the exact Claude and Codex commands to continue that workstream
 - a simple rename control in the detail view
+- per-entry load controls in the detail view:
+  - pin: always include that saved entry in future loads
+  - exclude: keep it saved and searchable, but do not include it in future loads
+  - delete: remove that saved entry entirely
 
 Frontend note:
 
@@ -220,6 +225,13 @@ When `ctx` pulls from Claude or Codex, it records on the internal ctx session:
 - transcript path
 - how many messages have already been imported
 
+What gets imported:
+
+- `ctx` parses the full local transcript file for the bound external conversation
+- user, assistant, developer/system, and tool/tool-call content are preserved as ctx entries
+- long messages are chunked, but not dropped
+- later pulls import only the delta after the stored `message_count`
+
 Later `resume` and `pull` calls try to match the current external conversation back to the correct ctx session inside the workstream. If there is no match yet, `ctx` creates a new ctx session for that external conversation instead of silently reusing the latest session from the whole workstream.
 
 This means:
@@ -243,6 +255,17 @@ Command semantics:
 - `ctx resume <name>` continues an existing workstream and chooses the right ctx session inside it
 - `ctx rename <new-name>` renames the current workstream
 - `ctx rename <new-name> --from <old-name>` renames a specific workstream
+
+Load curation:
+
+- use the browser detail page to pin, exclude, or delete specific saved entries
+- pinned entries are always included in future packs, even in compressed mode
+- excluded entries remain saved and searchable, but are omitted from future packs
+- if you want the same control from the core CLI, use:
+  - `python -m contextfun entry-load <entry-id> pin`
+  - `python -m contextfun entry-load <entry-id> exclude`
+  - `python -m contextfun entry-load <entry-id> default`
+  - `python -m contextfun entry-delete <entry-id>`
 
 Experimental command surfaces:
 
@@ -271,12 +294,12 @@ The output also explicitly tells the user:
 
 It also includes a small instruction block telling the agent to summarize briefly and ask how you want to proceed, instead of echoing the full pack back into chat.
 
-If the pack would be too large for a typical model context window, `ctx` automatically switches to a compressed load mode. In that case it will say so in the summary with a `Pack mode` line.
+If the pack would be too large for a typical model context window, `ctx` automatically switches to a compressed load mode. In that case it will say so in the summary with a `Pack mode` line. Pinned entries still stay in the load even when this happens.
 
 You can tune the character budget with:
 
 ```bash
-export CTX_LOAD_CHAR_BUDGET=12000
+export CTX_LOAD_CHAR_BUDGET=24000
 ```
 
 ## What `--pull` Means

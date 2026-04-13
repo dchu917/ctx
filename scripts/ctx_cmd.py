@@ -130,6 +130,17 @@ def _preview_text(text: Optional[str], limit: int = 140) -> str:
     return value[: limit - 3] + "..."
 
 
+def _entry_load_behavior(row: sqlite3.Row) -> str:
+    extras = _json_loads_safe(row["extras"]) if "extras" in row.keys() else {}
+    mode = str(extras.get("load_behavior") or "default").strip().lower()
+    return mode if mode in {"default", "pin", "exclude"} else "default"
+
+
+def _entry_role(row: sqlite3.Row) -> str:
+    extras = _json_loads_safe(row["extras"]) if "extras" in row.keys() else {}
+    return str(extras.get("role") or "").strip().lower()
+
+
 def _looks_like_ctx_noise(text: Optional[str]) -> bool:
     value = " ".join((text or "").strip().split()).lower()
     if not value:
@@ -155,11 +166,11 @@ def _looks_like_ctx_noise(text: Optional[str]) -> bool:
 
 
 def _load_char_budget() -> int:
-    raw = os.getenv("CTX_LOAD_CHAR_BUDGET", "12000")
+    raw = os.getenv("CTX_LOAD_CHAR_BUDGET", "24000")
     try:
-        return max(2000, int(raw))
+        return max(4000, int(raw))
     except Exception:
-        return 12000
+        return 24000
 
 
 def _db_path() -> Path:
@@ -496,8 +507,34 @@ def _recent_entry_rows(workstream_id: int, limit: int = 4) -> List[sqlite3.Row]:
             """,
             (workstream_id, max(limit * 5, 20)),
         ).fetchall()
-    meaningful = [row for row in rows if not _looks_like_ctx_noise(row["content"])]
-    return meaningful[:limit] if meaningful else rows[:limit]
+    visible = [row for row in rows if _entry_load_behavior(row) != "exclude"]
+    meaningful = [row for row in visible if not _looks_like_ctx_noise(row["content"])]
+    return meaningful[:limit] if meaningful else visible[:limit]
+
+
+def _load_control_counts(workstream_id: int) -> Tuple[int, int]:
+    db = _db_path()
+    if not db.exists():
+        return 0, 0
+    with _connect_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT e.extras
+            FROM entry e
+            JOIN session s ON s.id = e.session_id
+            WHERE s.workstream_id = ?
+            """,
+            (workstream_id,),
+        ).fetchall()
+    pinned = 0
+    excluded = 0
+    for row in rows:
+        mode = _entry_load_behavior(row)
+        if mode == "pin":
+            pinned += 1
+        elif mode == "exclude":
+            excluded += 1
+    return pinned, excluded
 
 
 def _workstream_goal_text(workstream_row: sqlite3.Row) -> str:
@@ -559,10 +596,10 @@ def _select_loaded_pack(
 ) -> Tuple[str, str]:
     budget = _load_char_budget()
     candidates = [
-        ("full", dict(focus=focus, brief=brief, max_sessions=5, max_entries=50)),
-        ("trimmed", dict(focus=focus, brief=brief, max_sessions=3, max_entries=18)),
-        ("compressed", dict(focus=(focus or "decision,todo"), brief=False, max_sessions=3, max_entries=12)),
-        ("brief", dict(focus=(focus or "decision,todo"), brief=True, max_sessions=2, max_entries=8)),
+        ("full", dict(focus=focus, brief=brief, max_sessions=12, max_entries=240)),
+        ("trimmed", dict(focus=focus, brief=brief, max_sessions=6, max_entries=90)),
+        ("compressed", dict(focus=(focus or "decision,todo"), brief=False, max_sessions=4, max_entries=28)),
+        ("brief", dict(focus=(focus or "decision,todo"), brief=True, max_sessions=2, max_entries=12)),
     ]
     fallback_text = ""
     fallback_mode = "brief"
@@ -589,14 +626,17 @@ def _render_loaded_output(
     if not ws_row:
         return _resume_pack_text(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief, max_sessions=5, max_entries=50)
     recent_entries = _recent_entry_rows(int(ws_row["id"]), limit=4)
+    pinned_count, excluded_count = _load_control_counts(int(ws_row["id"]))
     pack_mode, pack_text = _select_loaded_pack(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief)
     goal = _workstream_goal_text(ws_row)
     links = _source_links_text(int(ws_row["id"]), session_id=session_id)
     recent_lines = []
     if recent_entries:
         for row in recent_entries:
+            role = _entry_role(row)
+            label = f"{row['type']}/{role}" if role and role != row["type"] else row["type"]
             recent_lines.append(
-                f"- S{row['session_id']} `{row['type']}`: {_preview_text(row['content'], limit=110)}"
+                f"- S{row['session_id']} `{label}`: {_preview_text(row['content'], limit=110)}"
             )
     else:
         recent_lines.append("- No entries yet")
@@ -613,6 +653,7 @@ def _render_loaded_output(
             f"- Session: {session_label}",
             f"- Goal: {goal}",
             f"- Linked transcripts: {links}",
+            f"- Load controls: {pinned_count} pinned | {excluded_count} excluded",
             f"- Pack mode: {pack_mode}",
             "- Tip: In Codex, use `ctrl-t` to inspect the full command output. In Claude, expand the tool output block in the UI.",
             "",
@@ -642,6 +683,7 @@ def _render_loaded_output(
         f"Session: {session_label}",
         f"Goal: {goal}",
         f"Linked transcripts: {links}",
+        f"Load controls: {pinned_count} pinned | {excluded_count} excluded",
         f"Pack mode: {pack_mode}",
         "Tip: In Codex, use ctrl-t to inspect the full command output. In Claude, expand the tool output block in the UI.",
         "",
@@ -769,6 +811,82 @@ def _latest_jsonl_under(root: Path, name_hint: Optional[str] = None, source: Opt
     return latest[1]
 
 
+def _extract_text_blocks(value) -> List[str]:
+    parts: List[str] = []
+    if value is None:
+        return parts
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            parts.append(text)
+        return parts
+    if isinstance(value, list):
+        for item in value:
+            parts.extend(_extract_text_blocks(item))
+        return parts
+    if isinstance(value, dict):
+        text_type = str(value.get("type") or "").strip().lower()
+        if text_type in {"image", "input_image"}:
+            return parts
+        for key in ("text", "content", "message", "output", "input", "arguments"):
+            if key in value:
+                parts.extend(_extract_text_blocks(value.get(key)))
+        return parts
+    return parts
+
+
+def _join_text_blocks(value) -> Optional[str]:
+    parts = [p for p in _extract_text_blocks(value) if p]
+    if not parts:
+        return None
+    text = "\n".join(parts).strip()
+    return text or None
+
+
+def _messages_from_record(obj: dict) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    payload = obj.get("payload") if isinstance(obj.get("payload"), dict) else None
+    if payload:
+        ptype = str(payload.get("type") or "").strip().lower()
+        if ptype == "message":
+            role = str(payload.get("role") or obj.get("role") or obj.get("sender") or "system").strip().lower() or "system"
+            text = _join_text_blocks(payload.get("content"))
+            if text:
+                out.append({"role": role, "content": text})
+            return out
+        if ptype in {"function_call", "custom_tool_call"}:
+            name = str(payload.get("name") or ptype).strip()
+            body = _join_text_blocks(payload.get("arguments") if ptype == "function_call" else payload.get("input"))
+            text = f"[{name}]"
+            if body:
+                text += "\n" + body
+            out.append({"role": "tool_call", "content": text})
+            return out
+        if ptype in {"function_call_output", "custom_tool_call_output"}:
+            body = _join_text_blocks(payload.get("output"))
+            if body:
+                out.append({"role": "tool", "content": body})
+            return out
+        if ptype in {"user_message", "agent_message"}:
+            # These usually duplicate response_item/message records, so use them
+            # only when no direct message payload is present elsewhere.
+            text = _join_text_blocks(payload.get("message"))
+            role = "assistant" if ptype == "agent_message" else "user"
+            if text:
+                out.append({"role": role, "content": text})
+            return out
+
+    role = obj.get("role") or obj.get("sender")
+    text = obj.get("content") or obj.get("text")
+    if text is None and isinstance(obj.get("message"), dict):
+        role = role or obj["message"].get("role")
+        text = obj["message"].get("text") or obj["message"].get("content")
+    text = _join_text_blocks(text)
+    if text:
+        out.append({"role": str(role or "system"), "content": text})
+    return out
+
+
 def _read_jsonl_messages(path: Path) -> List[Dict[str, str]]:
     msgs: List[Dict[str, str]] = []
     try:
@@ -792,12 +910,7 @@ def _read_jsonl_messages(path: Path) -> List[Dict[str, str]]:
                     for obj in data:
                         if not isinstance(obj, dict):
                             continue
-                        role = obj.get("role") or obj.get("sender")
-                        text = obj.get("content") or obj.get("text")
-                        if isinstance(text, list):
-                            text = "\n".join([c for c in text if isinstance(c, str)])
-                        if text:
-                            msgs.append({"role": role or "system", "content": text})
+                        msgs.extend(_messages_from_record(obj))
                     return msgs
             except Exception:
                 # fall through to line-based parsing
@@ -810,50 +923,24 @@ def _read_jsonl_messages(path: Path) -> List[Dict[str, str]]:
                 obj = json.loads(line)
             except Exception:
                 continue
-            role = None
-            text = None
-            # Common shapes
-            if isinstance(obj, dict):
-                role = obj.get("role") or obj.get("sender")
-                text = obj.get("content") or obj.get("text")
-                if not role and isinstance(obj.get("message"), dict):
-                    role = obj["message"].get("role")
-                # Event-shaped
-                t = obj.get("type") or obj.get("event")
-                if not role and isinstance(t, str):
-                    tl = t.lower()
-                    if "assistant" in tl:
-                        role = "assistant"
-                    elif "user" in tl:
-                        role = "user"
-                # Blocks-shaped content
-                if isinstance(text, list):
-                    parts = []
-                    for b in text:
-                        if isinstance(b, str):
-                            parts.append(b)
-                        elif isinstance(b, dict):
-                            val = b.get("text") or b.get("content")
-                            if isinstance(val, str):
-                                parts.append(val)
-                    text = "\n".join([p for p in parts if p]) if parts else None
-                if text is None and "message" in obj and isinstance(obj["message"], dict):
-                    text = obj["message"].get("text") or obj["message"].get("content")
-                    if isinstance(text, list):
-                        parts = []
-                        for b in text:
-                            if isinstance(b, str):
-                                parts.append(b)
-                            elif isinstance(b, dict):
-                                val = b.get("text") or b.get("content")
-                                if isinstance(val, str):
-                                    parts.append(val)
-                        text = "\n".join([p for p in parts if p]) if parts else None
-            if text:
-                msgs.append({"role": role or "system", "content": text})
+            if not isinstance(obj, dict):
+                continue
+            msgs.extend(_messages_from_record(obj))
     except Exception:
         pass
-    return msgs
+    deduped: List[Dict[str, str]] = []
+    last_key: Optional[Tuple[str, str]] = None
+    for msg in msgs:
+        role = str(msg.get("role") or "system").strip().lower() or "system"
+        content = str(msg.get("content") or "").strip()
+        if not content:
+            continue
+        key = (role, content)
+        if key == last_key:
+            continue
+        last_key = key
+        deduped.append({"role": role, "content": content})
+    return deduped
 
 
 def ingest_messages(messages: List[Dict[str, str]], source_label: Optional[str], session_id: Optional[int] = None) -> None:

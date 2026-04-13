@@ -11,13 +11,19 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .cli import (
+    _delete_entry_attachments,
+    _delete_search_docs_for_entry,
+    _entry_load_behavior,
+    _entry_role,
     _fts_query,
     _fts_tokens,
     _get_current_workstream,
     _looks_like_ctx_noise,
     _preview_text,
+    _set_entry_load_behavior,
     _set_current_workstream,
     _table_exists,
+    _load_control_counts,
     _workstream_one_line_summary,
     connect,
     init_db,
@@ -51,6 +57,7 @@ def _workstream_latest_preview(conn: sqlite3.Connection, workstream_id: int) -> 
     latest_entries = conn.execute(
         """
         SELECT e.content
+        , e.extras
         FROM entry e
         JOIN session s ON s.id = e.session_id
         WHERE s.workstream_id = ?
@@ -64,11 +71,18 @@ def _workstream_latest_preview(conn: sqlite3.Connection, workstream_id: int) -> 
     else:
         latest = ""
     for row in latest_entries:
+        if _entry_load_behavior(row) == "exclude":
+            continue
         if row["content"] and not _looks_like_ctx_noise(row["content"]):
             latest = _preview_text(row["content"], limit=120)
             break
-    if not latest and latest_entries and latest_entries[0]["content"]:
-        latest = _preview_text(latest_entries[0]["content"], limit=120)
+    if not latest:
+        for row in latest_entries:
+            if _entry_load_behavior(row) == "exclude":
+                continue
+            if row["content"]:
+                latest = _preview_text(row["content"], limit=120)
+                break
     return latest or "No sessions yet"
 
 
@@ -243,25 +257,29 @@ class CtxWebApp:
                     e.session_id,
                     e.type,
                     e.content,
+                    e.extras,
                     e.created_at,
                     s.title AS session_title
                 FROM entry e
                 JOIN session s ON s.id = e.session_id
                 WHERE s.workstream_id = ?
                 ORDER BY e.id DESC
-                LIMIT 40
+                LIMIT 80
                 """,
                 (row["id"],),
             ).fetchall()
             meaningful = []
             for entry in recent_entries:
-                if entry["content"] and not _looks_like_ctx_noise(entry["content"]):
+                if _entry_load_behavior(entry) == "exclude":
                     meaningful.append(entry)
-                if len(meaningful) >= 12:
+                elif entry["content"] and not _looks_like_ctx_noise(entry["content"]):
+                    meaningful.append(entry)
+                if len(meaningful) >= 20:
                     break
             if not meaningful:
-                meaningful = recent_entries[:12]
+                meaningful = recent_entries[:20]
             current = self.current()
+            pinned_count, excluded_count = _load_control_counts(conn, int(row["id"]))
             return {
                 "workstream": {
                     "id": int(row["id"]),
@@ -273,6 +291,8 @@ class CtxWebApp:
                     "goal": _goal_text(row),
                     "summary": _workstream_one_line_summary(conn, row),
                     "current": bool(current and int(current["id"]) == int(row["id"])),
+                    "pinned_count": pinned_count,
+                    "excluded_count": excluded_count,
                 },
                 "sessions": [
                     {
@@ -291,6 +311,8 @@ class CtxWebApp:
                         "id": int(e["id"]),
                         "session_id": int(e["session_id"]),
                         "type": e["type"],
+                        "role": _entry_role(e),
+                        "load_behavior": _entry_load_behavior(e),
                         "preview": _preview_text(e["content"], limit=240),
                         "created_at": e["created_at"],
                         "session_title": e["session_title"],
@@ -298,6 +320,59 @@ class CtxWebApp:
                     for e in meaningful
                 ],
             }
+
+    def set_entry_load_behavior(self, entry_id: int, mode: str) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT e.id, e.session_id, s.workstream_id, w.slug AS workstream_slug
+                FROM entry e
+                JOIN session s ON s.id = e.session_id
+                LEFT JOIN workstream w ON w.id = s.workstream_id
+                WHERE e.id = ?
+                """,
+                (entry_id,),
+            ).fetchone()
+            if not row:
+                return {"ok": False, "code": 404, "stdout": "", "stderr": f"Entry {entry_id} not found"}
+            _set_entry_load_behavior(conn, entry_id, mode)
+            conn.commit()
+            slug = row["workstream_slug"] or ""
+        return {
+            "ok": True,
+            "code": 0,
+            "stdout": f"Entry {entry_id} load behavior set to {mode}",
+            "stderr": "",
+            "detail_slug": slug,
+        }
+
+    def delete_entry(self, entry_id: int) -> dict:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT e.id, e.session_id, e.type, s.workstream_id, w.slug AS workstream_slug
+                FROM entry e
+                JOIN session s ON s.id = e.session_id
+                LEFT JOIN workstream w ON w.id = s.workstream_id
+                WHERE e.id = ?
+                """,
+                (entry_id,),
+            ).fetchone()
+            if not row:
+                return {"ok": False, "code": 404, "stdout": "", "stderr": f"Entry {entry_id} not found"}
+            _delete_search_docs_for_entry(conn, entry_id)
+            conn.execute("DELETE FROM entry WHERE id = ?", (entry_id,))
+            conn.commit()
+            slug = row["workstream_slug"] or ""
+            session_id = int(row["session_id"])
+        _delete_entry_attachments(self.db_path, session_id, entry_id)
+        return {
+            "ok": True,
+            "code": 0,
+            "stdout": f"Deleted entry {entry_id}",
+            "stderr": "",
+            "detail_slug": slug,
+        }
 
     def search(self, query: str, limit: int = 8) -> dict:
         with self._connect() as conn:
@@ -654,6 +729,19 @@ def build_handler(app: CtxWebApp):
                     name=(str(data.get("name") or "").strip() or None),
                     session_id=int(session_id) if session_id not in {None, ""} else None,
                 )
+            elif parsed.path == "/api/entries/load-behavior":
+                entry_id = data.get("entry_id")
+                mode = str(data.get("mode") or "").strip().lower()
+                if entry_id in {None, ""} or mode not in {"default", "pin", "exclude"}:
+                    self._send_json({"error": "entry_id and valid mode are required"}, status=400)
+                    return
+                result = app.set_entry_load_behavior(int(entry_id), mode)
+            elif parsed.path == "/api/entries/delete":
+                entry_id = data.get("entry_id")
+                if entry_id in {None, ""}:
+                    self._send_json({"error": "entry_id is required"}, status=400)
+                    return
+                result = app.delete_entry(int(entry_id))
             else:
                 self._send_json({"error": "not found"}, status=404)
                 return
