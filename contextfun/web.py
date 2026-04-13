@@ -526,7 +526,7 @@ def build_handler(app: CtxWebApp):
             parsed = urlparse(self.path)
             path = parsed.path
             qs = parse_qs(parsed.query)
-            if path == "/":
+            if path == "/" or path.startswith("/workstreams/"):
                 self._send_asset("index.html", "text/html; charset=utf-8")
                 return
             if path == "/app.js":
