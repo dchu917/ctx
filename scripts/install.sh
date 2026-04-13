@@ -68,17 +68,23 @@ PYTHONPATH="$LIB_DIR" python3 -m contextfun --db "$DB_PATH" init >/dev/null || t
 
 cat <<EOF
 
-ContextFun installed.
+ctx installed.
 
 Open a new shell or run:
   export CONTEXTFUN_DB="$DB_PATH"
   export PATH="$BIN_DIR:\$PATH"
 
 Try:
+  ctx
   ctx list
+  ctx start my-workstream
+  ctx start my-workstream --pull
+  ctx resume my-workstream
+  ctx delete my-workstream
+  ctx branch from-workstream to-workstream
+  # Compatibility aliases also work:
   ctx-list
-  ctx-start my-workstream
-  ctx-start --pull my-workstream
+  ctx-start my-workstream --pull
   ctx-resume my-workstream
   ctx-delete my-workstream
   ctx-branch from-workstream to-workstream
