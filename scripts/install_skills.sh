@@ -44,14 +44,15 @@ fi
 if [[ -n "$CLAUDE_DIR" ]]; then
   echo "[Claude] Target: $CLAUDE_DIR"
   mkdir -p "$CLAUDE_DIR"
-  for d in "$ROOT_DIR/skills/claude"/*; do
-    name=$(basename "$d")
-    src="$d"
-    dst="$CLAUDE_DIR/$name"
-    rm -f "$dst" 2>/dev/null || true
-    ln -s "$src" "$dst"
-    echo "  - Linked $name"
-  done
+for d in "$ROOT_DIR/skills/claude"/*; do
+  [[ -f "$d/SKILL.md" ]] || continue
+  name=$(basename "$d")
+  src="$d"
+  dst="$CLAUDE_DIR/$name"
+  rm -f "$dst" 2>/dev/null || true
+  ln -s "$src" "$dst"
+  echo "  - Linked $name"
+done
 fi
 
 cat <<EOF
