@@ -22,7 +22,7 @@ elif command -v ctx >/dev/null 2>&1; then
   exec ctx list
 elif [[ -n "$REPO" ]]; then
   exec python3 "$REPO/scripts/ctx_cmd.py" list
-else
-  echo "ContextFun not found: install globally (ctx) or clone repo with scripts/ctx_cmd.py" >&2
-  exit 2
 fi
+
+echo "ContextFun not found: install ~/.contextfun/bin shims, install global ctx, or clone the repo." >&2
+exit 2

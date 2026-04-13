@@ -14,11 +14,6 @@ for _ in 1 2 3 4 5 6 7 8; do
   SEARCH="$CAND"
 done
 
-if [[ -z "$REPO" ]]; then
-  echo "ContextFun repo not found. Clone the repo and reinstall skills." >&2
-  exit 2
-fi
-
 NAME="${*:-${CTX_AGENT_WORKSTREAM:-}}"
 CMD=(--format markdown)
 if [[ -n "$NAME" ]]; then
@@ -31,6 +26,9 @@ elif command -v ctx-resume >/dev/null 2>&1; then
   exec ctx-resume "${CMD[@]}"
 elif command -v ctx >/dev/null 2>&1; then
   exec ctx resume "${CMD[@]}"
-else
+elif [[ -n "$REPO" ]]; then
   exec python3 "$REPO/scripts/ctx_cmd.py" resume "${CMD[@]}"
 fi
+
+echo "ContextFun not found: install ~/.contextfun/bin shims, install global ctx, or clone the repo." >&2
+exit 2
