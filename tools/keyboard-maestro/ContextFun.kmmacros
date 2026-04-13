@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+  <dict>
+    <key>Name</key>
+    <string>ctx resume</string>
+    <key>UID</key>
+    <string>2D2F2B4F-CTX-RESUME-0001</string>
+    <key>Triggers</key>
+    <array>
+      <dict>
+        <key>MacroTriggerType</key>
+        <string>TypedString</string>
+        <key>TypedString</key>
+        <string>/ctx resume</string>
+        <key>TypedStringIsRegex</key>
+        <false/>
+      </dict>
+    </array>
+    <key>Actions</key>
+    <array>
+      <dict>
+        <key>MacroActionType</key>
+        <string>ExecuteShellScript</string>
+        <key>Shell</key>
+        <string>/bin/zsh</string>
+        <key>Text</key>
+        <string>python3 &quot;/absolute/path/to/context-fun/scripts/skills/ctx_resume_skill.py&quot;</string>
+        <key>TimeOutAbortsMacro</key>
+        <true/>
+        <key>Asynchronously</key>
+        <false/>
+        <key>SaveToVariable</key>
+        <string>ContextFunStatus</string>
+      </dict>
+      <dict>
+        <key>MacroActionType</key>
+        <string>SetClipboardToText</string>
+        <key>Text</key>
+        <string>%Variable%ContextFunStatus%</string>
+      </dict>
+      <dict>
+        <key>MacroActionType</key>
+        <string>InsertText</string>
+        <key>InsertText</key>
+        <string>%Variable%ContextFunStatus%</string>
+        <key>Paste</key>
+        <true/>
+      </dict>
+    </array>
+  </dict>
+
+  <dict>
+    <key>Name</key>
+    <string>ctx start</string>
+    <key>UID</key>
+    <string>2D2F2B4F-CTX-START-0001</string>
+    <key>Triggers</key>
+    <array>
+      <dict>
+        <key>MacroTriggerType</key>
+        <string>TypedString</string>
+        <key>TypedString</key>
+        <string>/ctx start</string>
+        <key>TypedStringIsRegex</key>
+        <false/>
+      </dict>
+    </array>
+    <key>Actions</key>
+    <array>
+      <dict>
+        <key>MacroActionType</key>
+        <string>ExecuteShellScript</string>
+        <key>Shell</key>
+        <string>/bin/zsh</string>
+        <key>Text</key>
+        <string>python3 &quot;/absolute/path/to/context-fun/scripts/skills/ctx_start_skill.py&quot;</string>
+        <key>TimeOutAbortsMacro</key>
+        <true/>
+        <key>Asynchronously</key>
+        <false/>
+        <key>SaveToVariable</key>
+        <string>ContextFunStatus</string>
+      </dict>
+      <dict>
+        <key>MacroActionType</key>
+        <string>SetClipboardToText</string>
+        <key>Text</key>
+        <string>%Variable%ContextFunStatus%</string>
+      </dict>
+      <dict>
+        <key>MacroActionType</key>
+        <string>InsertText</string>
+        <key>InsertText</key>
+        <string>%Variable%ContextFunStatus%</string>
+        <key>Paste</key>
+        <true/>
+      </dict>
+    </array>
+  </dict>
+
+</array>
+</plist>
+
