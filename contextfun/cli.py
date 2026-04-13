@@ -14,7 +14,7 @@ DEFAULT_HOME = Path.cwd() / ".contextfun"
 DEFAULT_DB = DEFAULT_HOME / "context.db"
 ATTACH_DIR = DEFAULT_HOME / "attachments"
 CURRENT_FILE = DEFAULT_HOME / "current.json"
-SEARCH_INDEX_VERSION = "5"
+SEARCH_INDEX_VERSION = "6"
 SEARCH_INDEX_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
     kind UNINDEXED,
@@ -858,11 +858,29 @@ def _looks_like_ctx_noise(text: str) -> bool:
         "<command-message>",
         "<command-name>",
         "<command-args>",
+        "# agents.md instructions for ",
+        "<environment_context>",
+        "supported chat-style commands in this repo:",
+        "using the `ctx-",
+        "running `ctx ",
+        "resumed `",
+        "## ctx loaded:",
+        "contextfun agent guide",
+        "[exec_command] {\"cmd\":\"ctx ",
+        "[exec_command] {\"cmd\":\"bash ~/.codex/skills/ctx-",
+        "[exec_command] {\"cmd\":\"python3 scripts/ctx_cmd.py",
         "tip: press tab to queue a message when a task is running",
         "openai codex (v",
         "[rerun:",
     )
     if any(marker in collapsed for marker in noise_markers):
+        return True
+    if any(cmd in collapsed for cmd in ("ctx start ", "ctx resume ", "ctx list", "ctx search ", "ctx delete ", "ctx branch ")):
+        if len(collapsed) < 220:
+            return True
+    if collapsed.startswith("ctx ") and len(collapsed) < 120:
+        return True
+    if "name: ctx-" in collapsed:
         return True
     if collapsed.startswith("davidchu@") and "% codex" in collapsed:
         return True
@@ -961,6 +979,20 @@ def _entry_display_label(raw) -> str:
     if role and role not in {"", entry_type}:
         return f"{entry_type}/{role}" if entry_type else role
     return entry_type or role or "note"
+
+
+def _entry_is_meaningful_for_pack(raw) -> bool:
+    if _entry_is_excluded_from_load(raw):
+        return False
+    role = _entry_role(raw)
+    if role in {"developer", "system"}:
+        return False
+    content = ""
+    if isinstance(raw, sqlite3.Row) and "content" in raw.keys():
+        content = str(raw["content"] or "")
+    elif isinstance(raw, dict):
+        content = str(raw.get("content") or "")
+    return not _looks_like_ctx_noise(content)
 
 
 def _set_entry_load_behavior(conn: sqlite3.Connection, entry_id: int, mode: str) -> dict:
@@ -1265,7 +1297,7 @@ def _pack_entry_groups(
     max_entries: int,
     focus: set[str] | None,
 ) -> tuple[list[sqlite3.Row], list[sqlite3.Row], int, int]:
-    pinned_rows_all = conn.execute(
+    visible_rows_all = conn.execute(
         """
         SELECT e.*, s.title AS session_title
         FROM entry e
@@ -1276,8 +1308,11 @@ def _pack_entry_groups(
         (workstream_id,),
     ).fetchall()
     pinned_entries: list[sqlite3.Row] = []
+    meaningful_recent: list[sqlite3.Row] = []
+    fallback_recent: list[sqlite3.Row] = []
     excluded_count = 0
-    for row in pinned_rows_all:
+    pinned_ids: set[int] = set()
+    for row in visible_rows_all:
         if focus and row["type"] not in focus:
             continue
         mode = _entry_load_behavior(row)
@@ -1286,29 +1321,17 @@ def _pack_entry_groups(
             continue
         if mode == "pin":
             pinned_entries.append(row)
+            pinned_ids.add(int(row["id"]))
+            continue
+        if _entry_is_meaningful_for_pack(row):
+            meaningful_recent.append(row)
+        else:
+            fallback_recent.append(row)
 
-    recent_entries: list[sqlite3.Row] = []
-    if session_ids:
-        marks = ",".join("?" for _ in session_ids)
-        rows = conn.execute(
-            f"""
-            SELECT e.*, s.title AS session_title
-            FROM entry e
-            JOIN session s ON s.id = e.session_id
-            WHERE e.session_id IN ({marks})
-            ORDER BY e.id DESC
-            LIMIT ?
-            """,
-            (*session_ids, max(max_entries * 10, 120)),
-        ).fetchall()
-        pinned_ids = {int(row["id"]) for row in pinned_entries}
-        for row in rows:
-            if focus and row["type"] not in focus:
-                continue
-            mode = _entry_load_behavior(row)
-            if mode == "exclude":
-                continue
-            if int(row["id"]) in pinned_ids or mode == "pin":
+    recent_entries = meaningful_recent[:max_entries]
+    if len(recent_entries) < max_entries:
+        for row in fallback_recent:
+            if int(row["id"]) in pinned_ids:
                 continue
             recent_entries.append(row)
             if len(recent_entries) >= max_entries:

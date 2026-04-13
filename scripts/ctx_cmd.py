@@ -154,11 +154,29 @@ def _looks_like_ctx_noise(text: Optional[str]) -> bool:
         "<command-message>",
         "<command-name>",
         "<command-args>",
+        "# agents.md instructions for ",
+        "<environment_context>",
+        "supported chat-style commands in this repo:",
+        "using the `ctx-",
+        "running `ctx ",
+        "resumed `",
+        "## ctx loaded:",
+        "contextfun agent guide",
+        "[exec_command] {\"cmd\":\"ctx ",
+        "[exec_command] {\"cmd\":\"bash ~/.codex/skills/ctx-",
+        "[exec_command] {\"cmd\":\"python3 scripts/ctx_cmd.py",
         "tip: press tab to queue a message when a task is running",
         "openai codex (v",
         "[rerun:",
     )
     if any(marker in value for marker in noise_markers):
+        return True
+    if any(cmd in value for cmd in ("ctx start ", "ctx resume ", "ctx list", "ctx search ", "ctx delete ", "ctx branch ")):
+        if len(value) < 220:
+            return True
+    if value.startswith("ctx ") and len(value) < 120:
+        return True
+    if "name: ctx-" in value:
         return True
     if value.startswith("davidchu@") and "% codex" in value:
         return True
@@ -171,6 +189,18 @@ def _load_char_budget() -> int:
         return max(4000, int(raw))
     except Exception:
         return 24000
+
+
+def _should_compress(explicit: bool, disabled: bool) -> bool:
+    if explicit and disabled:
+        print("Choose only one of --compress or --no-compress", file=sys.stderr)
+        sys.exit(2)
+    if explicit:
+        return True
+    if disabled:
+        return False
+    raw = str(os.getenv("CTX_COMPRESS_DEFAULT", "0")).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _db_path() -> Path:
@@ -508,7 +538,11 @@ def _recent_entry_rows(workstream_id: int, limit: int = 4) -> List[sqlite3.Row]:
             (workstream_id, max(limit * 5, 20)),
         ).fetchall()
     visible = [row for row in rows if _entry_load_behavior(row) != "exclude"]
-    meaningful = [row for row in visible if not _looks_like_ctx_noise(row["content"])]
+    meaningful = [
+        row
+        for row in visible
+        if _entry_role(row) not in {"developer", "system"} and not _looks_like_ctx_noise(row["content"])
+    ]
     return meaningful[:limit] if meaningful else visible[:limit]
 
 
@@ -598,8 +632,8 @@ def _select_loaded_pack(
     candidates = [
         ("full", dict(focus=focus, brief=brief, max_sessions=12, max_entries=240)),
         ("trimmed", dict(focus=focus, brief=brief, max_sessions=6, max_entries=90)),
-        ("compressed", dict(focus=(focus or "decision,todo"), brief=False, max_sessions=4, max_entries=28)),
-        ("brief", dict(focus=(focus or "decision,todo"), brief=True, max_sessions=2, max_entries=12)),
+        ("compressed", dict(focus=focus, brief=False, max_sessions=4, max_entries=28)),
+        ("brief", dict(focus=focus, brief=True, max_sessions=2, max_entries=12)),
     ]
     fallback_text = ""
     fallback_mode = "brief"
@@ -620,14 +654,28 @@ def _render_loaded_output(
     focus: Optional[str],
     fmt: str,
     brief: bool,
+    compress: bool,
 ) -> str:
     ws_row = _workstream_row_by_slug(str(workstream["slug"]))
     session = _session_row(session_id) if session_id else None
     if not ws_row:
-        return _resume_pack_text(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief, max_sessions=5, max_entries=50)
+        if compress:
+            return _resume_pack_text(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief, max_sessions=5, max_entries=50)
+        return _resume_pack_text(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief, max_sessions=12, max_entries=240)
     recent_entries = _recent_entry_rows(int(ws_row["id"]), limit=4)
     pinned_count, excluded_count = _load_control_counts(int(ws_row["id"]))
-    pack_mode, pack_text = _select_loaded_pack(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief)
+    if compress:
+        pack_mode, pack_text = _select_loaded_pack(str(workstream["slug"]), focus=focus, fmt=fmt, brief=brief)
+    else:
+        pack_mode = "full"
+        pack_text = _resume_pack_text(
+            str(workstream["slug"]),
+            focus=focus,
+            fmt=fmt,
+            brief=brief,
+            max_sessions=12,
+            max_entries=240,
+        )
     goal = _workstream_goal_text(ws_row)
     links = _source_links_text(int(ws_row["id"]), session_id=session_id)
     recent_lines = []
@@ -1333,6 +1381,8 @@ def main():
     p_new.add_argument("--focus")
     p_new.add_argument("--format", default="markdown", choices=["text", "markdown"])
     p_new.add_argument("--brief", action="store_true")
+    p_new.add_argument("--compress", action="store_true", help="Use a compressed pack instead of the full load")
+    p_new.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
 
     p_list = sub.add_parser("list", help="/ctx list")
     p_search = sub.add_parser("search", help="/ctx search <query>")
@@ -1347,6 +1397,8 @@ def main():
     p_go.add_argument("--source", help="Preferred source to bind/pull when unlinked (claude or codex)")
     p_go.add_argument("--auto-pull", action="store_true", help="Import newest Codex/Claude transcript before emitting pack (default on; see CTX_AUTOPULL_DEFAULT)")
     p_go.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
+    p_go.add_argument("--compress", action="store_true", help="Use a compressed pack instead of the full load")
+    p_go.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
 
     # Friendly aliases tailored to "-start" and "-resume" chat triggers
     p_start = sub.add_parser("start", help="Ensure workstream, create session, optionally ingest clipboard, and emit pack")
@@ -1367,6 +1419,8 @@ def main():
     p_start.add_argument("--pull-claude", action="store_true", help="Import latest Claude Code transcript into the session")
     p_start.add_argument("--auto-pull", action="store_true", help="Import the newest transcript between Codex and Claude (default on; see CTX_AUTOPULL_DEFAULT)")
     p_start.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
+    p_start.add_argument("--compress", action="store_true", help="Use a compressed pack instead of the full load")
+    p_start.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
 
     p_resume2 = sub.add_parser("resume", help="Resume an existing workstream")
     p_resume2.add_argument("name", help="Workstream name or slug")
@@ -1378,6 +1432,8 @@ def main():
     p_resume2.add_argument("--pull-claude", action="store_true", help="Import latest Claude Code transcript into the latest session before emitting pack")
     p_resume2.add_argument("--auto-pull", action="store_true", help="Import the newest transcript between Codex and Claude before emitting pack (default on; see CTX_AUTOPULL_DEFAULT)")
     p_resume2.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
+    p_resume2.add_argument("--compress", action="store_true", help="Use a compressed pack instead of the full load")
+    p_resume2.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
 
     p_branch = sub.add_parser("branch", help="Create a new workstream seeded from an existing workstream's current context")
     p_branch.add_argument("source_name", help="Existing source workstream slug or title")
@@ -1386,6 +1442,8 @@ def main():
     p_branch.add_argument("--focus")
     p_branch.add_argument("--format", default="markdown", choices=["text", "markdown"])
     p_branch.add_argument("--brief", action="store_true")
+    p_branch.add_argument("--compress", action="store_true", help="Use a compressed pack instead of the full load")
+    p_branch.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
 
     p_delete = sub.add_parser("delete", help="Delete a session by id, or delete the latest session in a workstream")
     p_delete.add_argument("name", nargs="?", help="Workstream slug or title; deletes the latest session in that workstream")
@@ -1444,6 +1502,7 @@ def main():
     args = p.parse_args()
 
     if args.cmd == "new":
+        compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
         ws = ensure_workstream(args.name, set_current=True, unique_if_exists=True)
         sid = _create_session_for_workstream(ws, agent=args.agent)
         action_label = "started new workstream and first session"
@@ -1457,6 +1516,7 @@ def main():
                 focus=args.focus,
                 fmt=args.format,
                 brief=args.brief,
+                compress=compress,
             )
         )
     elif args.cmd == "list":
@@ -1464,6 +1524,7 @@ def main():
     elif args.cmd == "search":
         sys.stdout.write(search_context(" ".join(args.query), limit=args.limit) + "\n")
     elif args.cmd == "go":
+        compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
         ws = require_workstream(args.name, set_current=True)
         sid, action_label, initial_candidate = _select_resume_session(
             ws,
@@ -1480,6 +1541,7 @@ def main():
                 focus=args.focus,
                 fmt=args.format,
                 brief=args.brief,
+                compress=compress,
             )
         )
     elif args.cmd == "set":
@@ -1523,6 +1585,7 @@ def main():
             web_args.append("--open")
         return run_ctx_passthrough(web_args)
     elif args.cmd == "start":
+        compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
         # Start a new workstream and create its first session. If the name
         # already exists, ctx creates a suffixed variant like "name (1)".
         ws = ensure_workstream(args.name, set_current=True, unique_if_exists=True)
@@ -1581,9 +1644,11 @@ def main():
                 focus=args.focus,
                 fmt=args.format,
                 brief=args.brief,
+                compress=compress,
             )
         )
     elif args.cmd == "resume":
+        compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
         ws = require_workstream(args.name, set_current=True)
         sid, action_label, initial_candidate = _select_resume_session(
             ws,
@@ -1606,9 +1671,11 @@ def main():
                 focus=args.focus,
                 fmt=args.format,
                 brief=args.brief,
+                compress=compress,
             )
         )
     elif args.cmd == "branch":
+        compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
         source_ws = lookup_workstream(args.source_name)
         if not source_ws:
             print(f"Source workstream '{args.source_name}' not found", file=sys.stderr)
@@ -1645,6 +1712,7 @@ def main():
                 focus=args.focus,
                 fmt=args.format,
                 brief=args.brief,
+                compress=compress,
             )
         )
     elif args.cmd == "delete":

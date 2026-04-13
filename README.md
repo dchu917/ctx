@@ -191,6 +191,7 @@ Codex:
 - `ctx start my-stream`
 - `ctx start my-stream --pull`
 - `ctx resume my-stream`
+- `ctx resume my-stream --compress`
 - `ctx rename better-name`
 - `ctx rename better-name --from old-name`
 - `ctx delete my-stream`
@@ -294,12 +295,26 @@ The output also explicitly tells the user:
 
 It also includes a small instruction block telling the agent to summarize briefly and ask how you want to proceed, instead of echoing the full pack back into chat.
 
-If the pack would be too large for a typical model context window, `ctx` automatically switches to a compressed load mode. In that case it will say so in the summary with a `Pack mode` line. Pinned entries still stay in the load even when this happens.
+By default, `ctx start`, `ctx resume`, and `ctx branch` now emit the full load instead of auto-compressing it.
+
+If you want a smaller pack on purpose, use `--compress`:
+
+```bash
+ctx resume my-stream --compress
+```
+
+Pinned entries still stay in the load even when compressed mode is used.
 
 You can tune the character budget with:
 
 ```bash
 export CTX_LOAD_CHAR_BUDGET=24000
+```
+
+If you want compression to be the default again for your own shell, set:
+
+```bash
+export CTX_COMPRESS_DEFAULT=1
 ```
 
 ## What `--pull` Means
