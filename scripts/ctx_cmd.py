@@ -15,9 +15,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from contextfun.cli import (
+    _attach_dir,
     _current_workspace_path as _ctx_current_workspace_path,
     _effective_workspace_for_workstream,
+    _index_entry,
+    _index_session,
+    _index_workstream,
     _workspace_relation,
+    now_iso,
 )
 
 LIB = ROOT / "lib"
@@ -296,6 +301,164 @@ def _connect_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(_db_path()))
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _copy_branch_attachment(extras: Dict[str, object], new_session_id: int, new_entry_id: int) -> Dict[str, object]:
+    attachment = extras.get("attachment")
+    if not attachment:
+        return extras
+    src = Path(str(attachment))
+    if not src.exists() or not src.is_file():
+        return extras
+    dst_dir = _attach_dir() / str(new_session_id) / str(new_entry_id)
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    dst = dst_dir / src.name
+    shutil.copy2(src, dst)
+    updated = dict(extras)
+    updated["attachment"] = str(dst)
+    return updated
+
+
+def _clone_workstream_snapshot(
+    source_workstream: Dict[str, object],
+    target_workstream: Dict[str, object],
+    *,
+    default_agent: Optional[str],
+) -> int:
+    source_id = int(source_workstream["id"])
+    target_id = int(target_workstream["id"])
+    latest_new_session_id: Optional[int] = None
+
+    with _connect_db() as conn:
+        source_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (source_id,)).fetchone()
+        target_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (target_id,)).fetchone()
+        if not source_row or not target_row:
+            raise SystemExit("Branch clone failed: workstream not found")
+
+        source_meta = _json_loads_safe(source_row["metadata"])
+        target_meta = _json_loads_safe(target_row["metadata"])
+        target_meta["branch_from"] = {
+            "id": source_id,
+            "slug": source_row["slug"],
+            "title": source_row["title"],
+            "branched_at": now_iso(),
+        }
+        source_summary = (
+            str(source_row["description"] or "").strip()
+            or str(source_meta.get("summary") or "").strip()
+            or str(source_row["title"] or "").strip()
+        )
+        if source_summary:
+            target_meta["branch_summary"] = source_summary
+        conn.execute(
+            "UPDATE workstream SET metadata = ? WHERE id = ?",
+            (json.dumps(target_meta) if target_meta else None, target_id),
+        )
+        _index_workstream(conn, target_id)
+
+        source_sessions = conn.execute(
+            """
+            SELECT * FROM session
+            WHERE workstream_id = ?
+            ORDER BY id ASC
+            """,
+            (source_id,),
+        ).fetchall()
+
+        cur = conn.cursor()
+        for source_session in source_sessions:
+            session_meta = _json_loads_safe(source_session["metadata"])
+            session_meta["branch_snapshot_from"] = {
+                "workstream_id": source_id,
+                "workstream_slug": source_row["slug"],
+                "session_id": int(source_session["id"]),
+                "session_title": source_session["title"],
+            }
+            cur.execute(
+                """
+                INSERT INTO session(workstream_id, title, agent, tags, workspace, created_at, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    target_id,
+                    source_session["title"],
+                    source_session["agent"],
+                    source_session["tags"],
+                    source_session["workspace"],
+                    source_session["created_at"],
+                    json.dumps(session_meta) if session_meta else None,
+                ),
+            )
+            latest_new_session_id = int(cur.lastrowid)
+            _index_session(conn, latest_new_session_id)
+
+            source_entries = conn.execute(
+                """
+                SELECT * FROM entry
+                WHERE session_id = ?
+                ORDER BY id ASC
+                """,
+                (int(source_session["id"]),),
+            ).fetchall()
+            for source_entry in source_entries:
+                entry_extras = _json_loads_safe(source_entry["extras"])
+                entry_extras["branch_snapshot_from"] = {
+                    "workstream_id": source_id,
+                    "workstream_slug": source_row["slug"],
+                    "session_id": int(source_session["id"]),
+                    "entry_id": int(source_entry["id"]),
+                }
+                cur.execute(
+                    """
+                    INSERT INTO entry(session_id, type, content, extras, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        latest_new_session_id,
+                        source_entry["type"],
+                        source_entry["content"],
+                        json.dumps(entry_extras) if entry_extras else None,
+                        source_entry["created_at"],
+                    ),
+                )
+                new_entry_id = int(cur.lastrowid)
+                updated_extras = _copy_branch_attachment(entry_extras, latest_new_session_id, new_entry_id)
+                if updated_extras != entry_extras:
+                    conn.execute(
+                        "UPDATE entry SET extras = ? WHERE id = ?",
+                        (json.dumps(updated_extras), new_entry_id),
+                    )
+                _index_entry(conn, new_entry_id)
+
+        if latest_new_session_id is None:
+            empty_meta = {
+                "branch_snapshot_from": {
+                    "workstream_id": source_id,
+                    "workstream_slug": source_row["slug"],
+                    "empty_source": True,
+                }
+            }
+            cur.execute(
+                """
+                INSERT INTO session(workstream_id, title, agent, tags, workspace, created_at, metadata)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    target_id,
+                    f"Branch from {source_row['slug']}",
+                    default_agent,
+                    None,
+                    source_row["workspace"],
+                    now_iso(),
+                    json.dumps(empty_meta),
+                ),
+            )
+            latest_new_session_id = int(cur.lastrowid)
+            _index_session(conn, latest_new_session_id)
+
+        conn.commit()
+
+    return latest_new_session_id
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -1833,23 +1996,12 @@ def main():
                 file=sys.stderr,
             )
             return 1
-        seed = workstream_pack(source_ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief)
         target_ws = ensure_workstream(args.target_name, set_current=True)
-        sid = _create_session_for_workstream(target_ws, agent=args.agent, title=f"Branch from {source_ws['slug']}")
-        branch_note = (
-            f"Branched from workstream [{source_ws['slug']}] into [{target_ws['slug']}].\n\n"
-            f"The snapshot below is the starting context for this branch. "
-            f"This branch starts detached: it does not inherit the source workstream's live Claude/Codex transcript bindings.\n\n"
-            f"{seed}"
+        sid = _clone_workstream_snapshot(
+            source_ws,
+            target_ws,
+            default_agent=args.agent,
         )
-        run_ctx([
-            "add",
-            str(sid),
-            "--type",
-            "note",
-            "--text",
-            "-",
-        ], input_data=branch_note)
         sys.stdout.write(
             _render_loaded_output(
                 target_ws,

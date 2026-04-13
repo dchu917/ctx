@@ -1596,6 +1596,34 @@ def _is_good_summary_candidate(text: str) -> bool:
 
 
 def _branch_source_summary(conn: sqlite3.Connection, workstream_id: int) -> str:
+    workstream_row = conn.execute(
+        "SELECT slug, title, metadata FROM workstream WHERE id = ?",
+        (workstream_id,),
+    ).fetchone()
+    if workstream_row and workstream_row["metadata"]:
+        try:
+            meta = json.loads(workstream_row["metadata"]) or {}
+        except Exception:
+            meta = {}
+        branch_from = meta.get("branch_from")
+        if isinstance(branch_from, dict):
+            source_slug = str(branch_from.get("slug") or "").strip()
+            source_summary = str(meta.get("branch_summary") or "").strip()
+            if not source_summary and source_slug:
+                source_row = conn.execute(
+                    "SELECT * FROM workstream WHERE slug = ? LIMIT 1",
+                    (source_slug,),
+                ).fetchone()
+                if source_row:
+                    source_summary = _workstream_explicit_summary(source_row)
+                    if not source_summary:
+                        source_summary = _infer_workstream_summary(conn, int(source_row["id"]), str(source_row["title"]))
+                    source_summary = source_summary.removeprefix("summary: ").strip()
+            if source_slug and source_summary:
+                return f"Branch of {source_slug}: {source_summary}"
+            if source_slug:
+                return f"Branch of {source_slug}"
+
     row = conn.execute(
         """
         SELECT e.content

@@ -361,7 +361,7 @@ Claude shortcuts:
 
 Branching behavior:
 
-- the target gets a snapshot pack of the source as its starting point
+- the target gets a frozen copy of the source workstream's saved sessions and entries as its starting point
 - the target starts detached and does not inherit the source's future transcript pulls
 - if the current Claude/Codex conversation is already owned by the source workstream, resuming the branch stays detached instead of reusing that transcript
 - future work in the target is independent
