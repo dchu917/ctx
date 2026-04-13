@@ -102,6 +102,37 @@ That does the local setup:
 
 Then restart your client.
 
+## Experimental: OpenCode And Cursor
+
+`ctx` now includes project-local experimental command scaffolding for both OpenCode and Cursor.
+
+OpenCode:
+
+- command files live in `.opencode/commands/`
+- includes `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, and `/ctx-web`
+- OpenCode also documents support for project command files, `AGENTS.md`, and Claude-compatible skill locations
+
+Cursor:
+
+- command files live in `.cursor/commands/`
+- includes `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, and `/ctx-web`
+- Cursor also supports project custom slash commands and project instructions such as `AGENTS.md`
+
+Important:
+
+- treat both integrations as experimental for now
+- the repo includes the command files and instruction scaffolding, but they have not been validated as thoroughly as the Claude Code and Codex flows
+- if a command does not behave the way you expect in Cursor or OpenCode, fall back to the same plain command in the agent shell:
+  - `ctx`
+  - `ctx list`
+  - `ctx search ...`
+  - `ctx start ...`
+  - `ctx resume ...`
+  - `ctx rename ...`
+  - `ctx delete ...`
+  - `ctx branch ...`
+  - `ctx web --open`
+
 ## Browser Frontend
 
 Open the local browser UI from the terminal or the agent shell:
@@ -212,6 +243,12 @@ Command semantics:
 - `ctx resume <name>` continues an existing workstream and chooses the right ctx session inside it
 - `ctx rename <new-name>` renames the current workstream
 - `ctx rename <new-name> --from <old-name>` renames a specific workstream
+
+Experimental command surfaces:
+
+- OpenCode: `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, `/ctx-web`
+- Cursor: `/ctx`, `/ctx-list`, `/ctx-search`, `/ctx-start`, `/ctx-resume`, `/ctx-rename`, `/ctx-delete`, `/ctx-branch`, `/ctx-web`
+- These are included as project-local experimental command files. The stable interface remains the plain `ctx ...` command family.
 
 ## Load Output And Compression
 
