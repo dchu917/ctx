@@ -25,6 +25,7 @@ Claude Code chat          Codex chat
 - Exact transcript binding: each internal ctx session can bind to the exact Claude and/or Codex conversation it came from.
 - No transcript drift: later pulls stay on that bound conversation instead of jumping to the newest chat on disk.
 - Safe branching: start a new workstream from the current state of another one without sharing future transcript pulls or hijacking the source conversation.
+- Indexed retrieval: saved workstreams, sessions, and entries are indexed for fast `ctx search` lookup.
 - Local-first: no API keys, no hosted service, plain SQLite plus local files.
 
 ## 3-Step Demo
@@ -90,6 +91,7 @@ Claude Code:
 
 - `/ctx`
 - `/ctx list`
+- `/ctx search dataset download`
 - `/ctx start my-stream --pull`
 - `/ctx resume my-stream`
 - `/ctx delete my-stream`
@@ -100,6 +102,7 @@ Codex:
 
 - `ctx`
 - `ctx list`
+- `ctx search dataset download`
 - `ctx start my-stream`
 - `ctx start my-stream --pull`
 - `ctx resume my-stream`
@@ -143,6 +146,13 @@ This means:
 - the same workstream can safely contain multiple Claude/Codex conversations as separate ctx sessions
 - one external Claude/Codex conversation is owned by at most one ctx session, so branches and sibling workstreams do not share the same live transcript
 - branching creates a new workstream without inheriting the source workstream's external links
+
+Search indexing:
+
+- `ctx` indexes workstreams, sessions, and entries into a local SQLite FTS index as they are created or ingested
+- imported or ingested conversation chunks become searchable immediately
+- `ctx search <query>` returns the best matching workstreams first, then the top matching snippets
+- compatibility alias: `ctx-search <query>`
 
 ## Load Output And Compression
 
@@ -280,6 +290,7 @@ Top-level wrapper commands:
 ```bash
 ctx
 ctx list
+ctx search dataset download
 ctx start my-stream --pull
 ctx resume my-stream
 ctx delete my-stream
@@ -291,6 +302,7 @@ Compatibility aliases still supported:
 
 ```bash
 ctx-list
+ctx-search dataset download
 ctx-start my-stream --pull
 ctx-resume my-stream
 ctx-delete my-stream

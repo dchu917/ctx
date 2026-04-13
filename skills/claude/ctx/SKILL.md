@@ -6,6 +6,7 @@ description: Show the current workstream, or dispatch ctx subcommands like list,
 Usage
 - `/ctx` — show the current workstream
 - `/ctx list`
+- `/ctx search <query>`
 - `/ctx start <workstream> [--pull]`
 - `/ctx resume <workstream>`
 - `/ctx delete <workstream>` or `/ctx delete --session-id <id>`

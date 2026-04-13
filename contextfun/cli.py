@@ -14,6 +14,22 @@ DEFAULT_HOME = Path.cwd() / ".contextfun"
 DEFAULT_DB = DEFAULT_HOME / "context.db"
 ATTACH_DIR = DEFAULT_HOME / "attachments"
 CURRENT_FILE = DEFAULT_HOME / "current.json"
+SEARCH_INDEX_VERSION = "4"
+SEARCH_INDEX_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+    kind UNINDEXED,
+    workstream_id UNINDEXED,
+    session_id UNINDEXED,
+    entry_id UNINDEXED,
+    workstream_slug,
+    workstream_title,
+    session_title,
+    body,
+    tags,
+    created_at UNINDEXED,
+    tokenize = 'porter unicode61 remove_diacritics 2'
+);
+"""
 
 
 SCHEMA = [
@@ -52,6 +68,12 @@ SCHEMA = [
         extras TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY(session_id) REFERENCES session(id) ON DELETE CASCADE
+    );
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS ctx_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
     );
     """,
     """
@@ -165,6 +187,14 @@ def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(r[1] == column for r in rows)
 
 
+def _ensure_search_index(conn: sqlite3.Connection) -> bool:
+    try:
+        conn.execute(SEARCH_INDEX_SQL)
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     # Create workstream table if missing
     if not _table_exists(conn, "workstream"):
@@ -232,6 +262,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_session_source_link_source ON session_source_link(source, external_session_id);
             """
         )
+    if not _table_exists(conn, "ctx_meta"):
+        conn.execute(
+            """
+            CREATE TABLE ctx_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
     if _table_exists(conn, "workstream_source_link") and _table_exists(conn, "session_source_link"):
         legacy_rows = conn.execute(
             """
@@ -282,10 +321,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
                     legacy["metadata"],
                 ),
             )
+    _ensure_search_index(conn)
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -358,6 +398,7 @@ def init_db(db_path: Path, quiet: bool = False) -> None:
             cur.execute(stmt)
         # Best-effort migration if existing DB lacks new fields
         _migrate(conn)
+        _maybe_refresh_search_index(conn)
         conn.commit()
     if not quiet:
         print(f"Initialized DB at {db_path}")
@@ -410,6 +451,7 @@ def cmd_session_new(args: argparse.Namespace):
             ),
         )
         sid = cur.lastrowid
+        _index_session(conn, int(sid))
         conn.commit()
     print(sid)
 
@@ -528,6 +570,7 @@ def cmd_session_delete(args: argparse.Namespace):
         if not row:
             print(f"Session {args.id} not found", file=sys.stderr)
             sys.exit(1)
+        _delete_search_docs_for_session(conn, int(args.id))
         conn.execute("DELETE FROM session WHERE id = ?", (args.id,))
         conn.commit()
 
@@ -592,6 +635,8 @@ def cmd_workstream_ensure(args: argparse.Namespace):
             created = True
         if args.set_current:
             _set_current_workstream(conn, slug=row["slug"], wid=None)
+        _index_workstream(conn, int(row["id"]))
+        conn.commit()
     result = {"id": int(row["id"]), "slug": row["slug"], "title": row["title"], "created": created}
     if args.json:
         print(json.dumps(result))
@@ -621,6 +666,7 @@ def cmd_workstream_new(args: argparse.Namespace):
             ),
         )
         wid = cur.lastrowid
+        _index_workstream(conn, int(wid))
         conn.commit()
     print(wid)
 
@@ -643,6 +689,8 @@ def _looks_like_ctx_noise(text: str) -> bool:
         "launching skill:",
         "args from unknown skill:",
         "unknown skill:",
+        "conversation compacted",
+        "no matches found",
         "<local-command-caveat>",
         "<command-message>",
         "<command-name>",
@@ -656,6 +704,297 @@ def _looks_like_ctx_noise(text: str) -> bool:
     if collapsed.startswith("davidchu@") and "% codex" in collapsed:
         return True
     return False
+
+
+def _flatten_search_text(value) -> list[str]:
+    out: list[str] = []
+    if value is None:
+        return out
+    if isinstance(value, str):
+        text = value.strip()
+        if text:
+            out.append(text)
+        return out
+    if isinstance(value, (int, float, bool)):
+        out.append(str(value))
+        return out
+    if isinstance(value, dict):
+        for k, v in value.items():
+            out.extend(_flatten_search_text(k))
+            out.extend(_flatten_search_text(v))
+        return out
+    if isinstance(value, list):
+        for item in value:
+            out.extend(_flatten_search_text(item))
+        return out
+    return out
+
+
+def _search_tags(*parts) -> str:
+    vals = []
+    for part in parts:
+        if not part:
+            continue
+        vals.append(str(part).strip())
+    return " ".join(v for v in vals if v)
+
+
+def _entry_extras_search_text(extras) -> str:
+    if not isinstance(extras, dict):
+        return " ".join(_flatten_search_text(extras))
+    filtered = {
+        k: v
+        for k, v in extras.items()
+        if k not in {"source", "role", "attachment", "source_file"}
+    }
+    return " ".join(_flatten_search_text(filtered))
+
+
+def _delete_search_docs_for_workstream(conn: sqlite3.Connection, workstream_id: int) -> None:
+    if not _table_exists(conn, "search_index"):
+        return
+    conn.execute(
+        "DELETE FROM search_index WHERE kind = 'workstream' AND workstream_id = ?",
+        (str(workstream_id),),
+    )
+
+
+def _delete_search_docs_for_session(conn: sqlite3.Connection, session_id: int) -> None:
+    if not _table_exists(conn, "search_index"):
+        return
+    conn.execute(
+        "DELETE FROM search_index WHERE session_id = ?",
+        (str(session_id),),
+    )
+
+
+def _delete_search_docs_for_entry(conn: sqlite3.Connection, entry_id: int) -> None:
+    if not _table_exists(conn, "search_index"):
+        return
+    conn.execute(
+        "DELETE FROM search_index WHERE kind = 'entry' AND entry_id = ?",
+        (str(entry_id),),
+    )
+
+
+def _index_workstream(conn: sqlite3.Connection, workstream_id: int) -> None:
+    if not _ensure_search_index(conn):
+        return
+    row = conn.execute("SELECT * FROM workstream WHERE id = ?", (workstream_id,)).fetchone()
+    _delete_search_docs_for_workstream(conn, workstream_id)
+    if not row:
+        return
+    meta = {}
+    if row["metadata"]:
+        try:
+            meta = json.loads(row["metadata"]) or {}
+        except Exception:
+            meta = {}
+    body = "\n".join(
+        [
+            t
+            for t in [
+                row["description"] or "",
+                str(meta.get("summary") or "").strip(),
+                row["workspace"] or "",
+            ]
+            if t
+        ]
+    )
+    conn.execute(
+        """
+        INSERT INTO search_index(
+            kind, workstream_id, session_id, entry_id, workstream_slug, workstream_title,
+            session_title, body, tags, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "workstream",
+            str(workstream_id),
+            "",
+            "",
+            row["slug"],
+            row["title"],
+            "",
+            body,
+            _search_tags(row["slug"], row["title"], row["tags"]),
+            row["created_at"],
+        ),
+    )
+
+
+def _index_session(conn: sqlite3.Connection, session_id: int) -> None:
+    if not _ensure_search_index(conn):
+        return
+    row = conn.execute(
+        """
+        SELECT s.*, w.slug AS workstream_slug, w.title AS workstream_title, w.tags AS workstream_tags
+        FROM session s
+        LEFT JOIN workstream w ON w.id = s.workstream_id
+        WHERE s.id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    _delete_search_docs_for_session(conn, session_id)
+    if not row:
+        return
+    meta = {}
+    if row["metadata"]:
+        try:
+            meta = json.loads(row["metadata"]) or {}
+        except Exception:
+            meta = {}
+    body = "\n".join(
+        [
+            t
+            for t in [
+                row["title"],
+                str(meta.get("summary") or "").strip(),
+                row["agent"] or "",
+                row["workspace"] or "",
+            ]
+            if t
+        ]
+    )
+    conn.execute(
+        """
+        INSERT INTO search_index(
+            kind, workstream_id, session_id, entry_id, workstream_slug, workstream_title,
+            session_title, body, tags, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "session",
+            str(row["workstream_id"] or ""),
+            str(session_id),
+            "",
+            row["workstream_slug"] or "",
+            row["workstream_title"] or "",
+            row["title"],
+            body,
+            _search_tags(row["tags"], row["workstream_tags"], row["workstream_slug"], row["workstream_title"]),
+            row["created_at"],
+        ),
+    )
+
+
+def _index_entry(conn: sqlite3.Connection, entry_id: int) -> None:
+    if not _ensure_search_index(conn):
+        return
+    row = conn.execute(
+        """
+        SELECT e.*, s.title AS session_title, s.tags AS session_tags, s.workstream_id,
+               w.slug AS workstream_slug, w.title AS workstream_title, w.tags AS workstream_tags
+        FROM entry e
+        JOIN session s ON s.id = e.session_id
+        LEFT JOIN workstream w ON w.id = s.workstream_id
+        WHERE e.id = ?
+        """,
+        (entry_id,),
+    ).fetchone()
+    _delete_search_docs_for_entry(conn, entry_id)
+    if not row:
+        return
+    content = row["content"] or ""
+    extras = {}
+    if row["extras"]:
+        try:
+            extras = json.loads(row["extras"]) or {}
+        except Exception:
+            extras = {"raw_extras": row["extras"]}
+    extras_text = _entry_extras_search_text(extras)
+    if _looks_like_ctx_noise(content):
+        return
+    body = "\n".join(
+        [
+            t
+            for t in [
+                row["type"],
+                content,
+                extras_text,
+            ]
+            if t
+        ]
+    )
+    if not body.strip():
+        return
+    conn.execute(
+        """
+        INSERT INTO search_index(
+            kind, workstream_id, session_id, entry_id, workstream_slug, workstream_title,
+            session_title, body, tags, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "entry",
+            str(row["workstream_id"] or ""),
+            str(row["session_id"]),
+            str(entry_id),
+            row["workstream_slug"] or "",
+            row["workstream_title"] or "",
+            row["session_title"] or "",
+            body,
+            _search_tags(
+                row["session_tags"],
+                row["workstream_tags"],
+                row["type"],
+                row["workstream_slug"],
+                row["workstream_title"],
+                row["session_title"],
+            ),
+            row["created_at"],
+        ),
+    )
+
+
+def _rebuild_search_index(conn: sqlite3.Connection) -> None:
+    if not _ensure_search_index(conn):
+        return
+    conn.execute("DELETE FROM search_index")
+    for row in conn.execute("SELECT id FROM workstream ORDER BY id").fetchall():
+        _index_workstream(conn, int(row["id"]))
+    for row in conn.execute("SELECT id FROM session ORDER BY id").fetchall():
+        _index_session(conn, int(row["id"]))
+    for row in conn.execute("SELECT id FROM entry ORDER BY id").fetchall():
+        _index_entry(conn, int(row["id"]))
+
+
+def _maybe_refresh_search_index(conn: sqlite3.Connection) -> None:
+    if not _ensure_search_index(conn):
+        return
+    if not _table_exists(conn, "ctx_meta"):
+        return
+    row = conn.execute(
+        "SELECT value FROM ctx_meta WHERE key = 'search_index_version'"
+    ).fetchone()
+    current_version = row["value"] if row else None
+    try:
+        doc_count = int(conn.execute("SELECT COUNT(*) AS n FROM search_index").fetchone()["n"])
+    except Exception:
+        doc_count = 0
+    if current_version != SEARCH_INDEX_VERSION or doc_count == 0:
+        try:
+            _rebuild_search_index(conn)
+            conn.execute(
+                """
+                INSERT INTO ctx_meta(key, value) VALUES ('search_index_version', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (SEARCH_INDEX_VERSION,),
+            )
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower():
+                raise
+
+
+def _fts_query(query: str) -> str:
+    tokens = re.findall(r"[A-Za-z0-9_./:-]+", query or "")
+    if not tokens:
+        return ""
+    return " AND ".join(f'"{t}"' for t in tokens)
 
 
 def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
@@ -910,7 +1249,6 @@ def cmd_add(args: argparse.Namespace):
             ),
         )
         eid = cur.lastrowid
-        conn.commit()
 
         # Handle snapshot after we have eid to place the file
         if args.snapshot:
@@ -925,26 +1263,99 @@ def cmd_add(args: argparse.Namespace):
                 "UPDATE entry SET extras = ? WHERE id = ?",
                 (json.dumps(ex), eid),
             )
-            conn.commit()
+        _index_entry(conn, int(eid))
+        conn.commit()
     print(eid)
 
 
 def cmd_search(args: argparse.Namespace):
     db = Path(args.db)
     init_db(db, quiet=True)
-    q = (
-        "SELECT e.id as entry_id, s.id as session_id, s.title, e.type, e.created_at "
-        "FROM entry e JOIN session s ON s.id = e.session_id "
-        "WHERE (e.content LIKE ? OR s.title LIKE ?) "
-        "ORDER BY e.id DESC"
-    )
-    like = f"%{args.query}%"
     with connect(db) as conn:
-        rows = conn.execute(q, (like, like)).fetchall()
-    for r in rows:
-        print(
-            f"[E{r['entry_id']}] S{r['session_id']}: {r['title']} ({r['type']}) - {r['created_at']}"
+        fts_q = _fts_query(args.query)
+        if _table_exists(conn, "search_index") and fts_q:
+            rows = conn.execute(
+                """
+                SELECT
+                    kind, workstream_id, session_id, entry_id, workstream_slug, workstream_title,
+                    session_title, created_at,
+                    snippet(search_index, 7, '[', ']', ' … ', 16) AS snippet,
+                    bm25(search_index, 1.0, 0.0, 0.0, 0.0, 5.0, 4.0, 3.0, 1.0, 1.0, 0.0) AS score
+                FROM search_index
+                WHERE search_index MATCH ?
+                ORDER BY score ASC
+                LIMIT ?
+                """,
+                (fts_q, max(args.limit * 4, 12)),
+            ).fetchall()
+            if not rows:
+                print("No matches")
+                return
+            kind_priority = {"entry": 0, "session": 1, "workstream": 2}
+            grouped: dict[str, dict[str, object]] = {}
+            for row in rows:
+                wsid = str(row["workstream_id"] or "")
+                g = grouped.setdefault(
+                    wsid,
+                    {
+                        "score": float(row["score"]),
+                        "hits": 0,
+                        "slug": row["workstream_slug"] or "(unscoped)",
+                        "title": row["workstream_title"] or "(no title)",
+                        "snippet": row["snippet"] or "",
+                        "kind": row["kind"],
+                    },
+                )
+                g["hits"] = int(g["hits"]) + 1
+                if float(row["score"]) < float(g["score"]):
+                    g["score"] = float(row["score"])
+                if row["snippet"] and (
+                    not g["snippet"]
+                    or kind_priority.get(str(row["kind"]), 99) < kind_priority.get(str(g["kind"]), 99)
+                ):
+                    g["snippet"] = row["snippet"]
+                    g["kind"] = row["kind"]
+
+            print("Top workstreams:")
+            top_groups = sorted(grouped.items(), key=lambda item: (float(item[1]["score"]), -int(item[1]["hits"])))[: args.limit]
+            for wsid, info in top_groups:
+                summary = ""
+                if wsid:
+                    ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (int(wsid),)).fetchone()
+                    if ws_row:
+                        summary = _workstream_one_line_summary(conn, ws_row)
+                line = f"- {info['slug']} — {summary or info['title']}"
+                line += f" | hits: {info['hits']}"
+                print(line)
+                if info["snippet"]:
+                    print(f"  best: {info['snippet']}")
+
+            print("")
+            print("Top matches:")
+            display_rows = sorted(
+                rows,
+                key=lambda row: (kind_priority.get(str(row["kind"]), 99), float(row["score"])),
+            )[: args.limit]
+            for row in display_rows:
+                session_part = f"S{row['session_id']} " if row["session_id"] else ""
+                entry_part = f"E{row['entry_id']} " if row["entry_id"] else ""
+                print(
+                    f"- {row['workstream_slug'] or '(unscoped)'} / {session_part}{entry_part}{row['kind']} @ {row['created_at']}"
+                )
+                if row["snippet"]:
+                    print(f"  {row['snippet']}")
+            return
+
+        q = (
+            "SELECT e.id as entry_id, s.id as session_id, s.title, e.type, e.created_at "
+            "FROM entry e JOIN session s ON s.id = e.session_id "
+            "WHERE (e.content LIKE ? OR s.title LIKE ?) "
+            "ORDER BY e.id DESC LIMIT ?"
         )
+        like = f"%{args.query}%"
+        rows = conn.execute(q, (like, like, args.limit)).fetchall()
+    for r in rows:
+        print(f"[E{r['entry_id']}] S{r['session_id']}: {r['title']} ({r['type']}) - {r['created_at']}")
 
 
 def cmd_export(args: argparse.Namespace):
@@ -1034,6 +1445,7 @@ def cmd_import(args: argparse.Namespace):
                     ),
                 )
                 count_entries += 1
+        _rebuild_search_index(conn)
         conn.commit()
     print(f"Imported {count_sessions} sessions, {count_entries} entries")
 
@@ -1079,6 +1491,7 @@ def _ensure_session_for_ingest(conn: sqlite3.Connection, workstream_slug=None, w
         ),
     )
     sid = cur.lastrowid
+    _index_session(conn, int(sid))
     conn.commit()
     return sid
 
@@ -1214,6 +1627,7 @@ def cmd_ingest(args: argparse.Namespace):
                     now_iso(),
                 ),
             )
+            _index_entry(conn, int(cur.lastrowid))
             count += 1
         conn.commit()
     print(f"Ingested {count} chunks into session {sid}")
@@ -1455,9 +1869,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_sl.set_defaults(func=_cmd_session_latest)
 
     # search
-    p_search = sp.add_parser("search", help="Search sessions and entries")
+    p_search = sp.add_parser("search", help="Search workstreams, sessions, and entries")
     add_common_args(p_search)
-    p_search.add_argument("query", help="Substring to search in titles and content")
+    p_search.add_argument("query", help="Search query")
+    p_search.add_argument("--limit", type=int, default=8, help="Max grouped results to show")
     p_search.set_defaults(func=cmd_search)
 
     # export

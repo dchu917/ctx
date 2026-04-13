@@ -1195,6 +1195,10 @@ def list_workstreams():
     return run_ctx(["workstream-list"]).rstrip()
 
 
+def search_context(query: str, limit: int = 8):
+    return run_ctx(["search", query, "--limit", str(limit)]).rstrip()
+
+
 def main():
     p = argparse.ArgumentParser(description="Slash-like /ctx helper")
     sub = p.add_subparsers(dest="cmd")
@@ -1207,6 +1211,9 @@ def main():
     p_new.add_argument("--brief", action="store_true")
 
     p_list = sub.add_parser("list", help="/ctx list")
+    p_search = sub.add_parser("search", help="/ctx search <query>")
+    p_search.add_argument("query", nargs="+")
+    p_search.add_argument("--limit", type=int, default=8)
 
     p_go = sub.add_parser("go", help="/ctx <name>")
     p_go.add_argument("name")
@@ -1318,6 +1325,8 @@ def main():
         )
     elif args.cmd == "list":
         sys.stdout.write(list_workstreams() + "\n")
+    elif args.cmd == "search":
+        sys.stdout.write(search_context(" ".join(args.query), limit=args.limit) + "\n")
     elif args.cmd == "go":
         ws = ensure_workstream(args.name, set_current=True)
         sid, action_label, initial_candidate = _select_resume_session(

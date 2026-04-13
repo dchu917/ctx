@@ -36,6 +36,10 @@ cat > "$BIN_DIR/ctx-list" <<EOF_SH
 #!/usr/bin/env bash
 exec "$BIN_DIR/ctx" list
 EOF_SH
+cat > "$BIN_DIR/ctx-search" <<EOF_SH
+#!/usr/bin/env bash
+exec "$BIN_DIR/ctx" search "$@"
+EOF_SH
 cat > "$BIN_DIR/ctx-resume" <<EOF_SH
 #!/usr/bin/env bash
 exec "$BIN_DIR/ctx" go "$@"
@@ -52,7 +56,7 @@ cat > "$BIN_DIR/ctx-branch" <<EOF_SH
 #!/usr/bin/env bash
 exec "$BIN_DIR/ctx" branch "$@"
 EOF_SH
-chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete" "$BIN_DIR/ctx-branch"
+chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-search" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete" "$BIN_DIR/ctx-branch"
 
 SHELL_RC=""
 if [[ -n "${ZSH_VERSION:-}" ]]; then SHELL_RC="$HOME/.zshrc"; fi
@@ -77,6 +81,7 @@ Open a new shell or run:
 Try:
   ctx
   ctx list
+  ctx search my-query
   ctx start my-workstream
   ctx start my-workstream --pull
   ctx resume my-workstream
@@ -84,6 +89,7 @@ Try:
   ctx branch from-workstream to-workstream
   # Compatibility aliases also work:
   ctx-list
+  ctx-search my-query
   ctx-start my-workstream --pull
   ctx-resume my-workstream
   ctx-delete my-workstream
