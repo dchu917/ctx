@@ -881,12 +881,17 @@ def cmd_ingest(args: argparse.Namespace):
     print(f"Ingested {count} chunks into session {sid}")
 
 
-def add_common_args(parser: argparse.ArgumentParser):
-    parser.add_argument(
-        "--db",
-        default=str(DEFAULT_DB),
-        help=f"Path to SQLite DB (default: {DEFAULT_DB})",
-    )
+def add_common_args(parser: argparse.ArgumentParser, *, use_default: bool = False):
+    kwargs = {
+        "help": f"Path to SQLite DB (default: {DEFAULT_DB})",
+    }
+    if use_default:
+        kwargs["default"] = str(DEFAULT_DB)
+    else:
+        # Preserve a previously parsed top-level --db instead of overwriting it
+        # with the subcommand default.
+        kwargs["default"] = argparse.SUPPRESS
+    parser.add_argument("--db", **kwargs)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -896,7 +901,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Store and retrieve context from coding agent sessions (Codex, Claude, etc.)."
         ),
     )
-    add_common_args(p)
+    add_common_args(p, use_default=True)
     sp = p.add_subparsers(dest="cmd", required=True)
 
     # init

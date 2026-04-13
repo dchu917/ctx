@@ -64,10 +64,14 @@ ContextFun installed.
 
 Open a new shell or run:
   export CONTEXTFUN_DB="$DB_PATH"
-  export PATH="$BIN_DIR:">$PATH
+  export PATH="$BIN_DIR:\$PATH"
 
 Try:
-  ctx list   # or: ctx-list
+  ctx list
+  ctx-list
+  ctx-start my-workstream
+  ctx-start --pull my-workstream
+  ctx-resume my-workstream
   python3 -m contextfun --help
 
 For Claude/Codex terminals, use the agent bootstrap one-liner from README.

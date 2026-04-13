@@ -18,8 +18,16 @@ if [[ -z "$REPO" ]]; then
   exit 2
 fi
 
-NAME="${*:-}"
+NAME="${*:-${CTX_AGENT_WORKSTREAM:-}}"
+CMD=(--format markdown)
+if [[ -n "$NAME" ]]; then
+  CMD+=("$NAME")
+fi
 
-exec python3 "$REPO/scripts/skills/ctx_resume_skill.py" \
-  ${NAME:+--name "$NAME"} \
-  --format markdown
+if command -v ctx-resume >/dev/null 2>&1; then
+  exec ctx-resume "${CMD[@]}"
+elif command -v ctx >/dev/null 2>&1; then
+  exec ctx resume "${CMD[@]}"
+else
+  exec python3 "$REPO/scripts/ctx_cmd.py" resume "${CMD[@]}"
+fi

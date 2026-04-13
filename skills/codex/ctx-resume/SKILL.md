@@ -1,18 +1,18 @@
 ---
 name: ctx-resume
-description: Resume a ContextFun workstream, auto-pull latest Codex/Claude transcript, copy a resume pack, and print a status line.
+description: Resume a ContextFun workstream and print a markdown pack.
 ---
 
 What it does
 - Ensures/selects a workstream.
 - Imports the newest transcript from Codex/Claude (local storage).
-- Generates a compact pack (markdown) and copies it to the clipboard.
-- Emits a status line: "Context for [slug] ingested. Last: <type> — <preview>".
+- Prints a compact markdown pack that can be pasted back into the chat.
 
 How to trigger
-- Run the helper script from your repo clone:
-  - `python3 scripts/skills/ctx_resume_skill.py --name "<workstream>"`
-  - Add `--paste` on macOS to paste into the frontmost app.
+- In Codex:
+  - `ctx-resume <workstream>`
+- Run from terminal:
+  - `python3 scripts/ctx_cmd.py resume "<workstream>" --format markdown`
 
 Requirements
 - Python 3.9+

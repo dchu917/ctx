@@ -285,6 +285,11 @@ def main():
     p_start.add_argument("--brief", action="store_true")
     p_start.add_argument("--from-clipboard", action="store_true", help="Ingest current clipboard into the new session")
     p_start.add_argument("--copy-frontmost", action="store_true", help="macOS: send Cmd+A/C to frontmost app before ingesting clipboard")
+    p_start.add_argument(
+        "--pull",
+        action="store_true",
+        help="Alias for --copy-frontmost --from-clipboard; capture the current visible chat into the new session",
+    )
     p_start.add_argument("--source", default=os.getenv("CTX_SOURCE_DEFAULT"), help="Optional source label for ingest (e.g., claude, codex)")
     p_start.add_argument("--pull-codex", action="store_true", help="Import latest Codex transcript into the session")
     p_start.add_argument("--pull-claude", action="store_true", help="Import latest Claude Code transcript into the session")
@@ -373,14 +378,34 @@ def main():
         # Ensure workstream and create a fresh session
         ws = ensure_workstream(args.name, set_current=True)
         create_session(agent=args.agent)
+        if args.pull:
+            args.copy_frontmost = True
+            args.from_clipboard = True
+        # Pull stored agent transcript(s) first so an explicit --pull of the
+        # current chat becomes the freshest context in the new session.
+        if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
+            auto_pull()
+        else:
+            if args.pull_codex:
+                ingest_latest_from_codex(source_label=(args.source or "codex"))
+            if args.pull_claude:
+                ingest_latest_from_claude(source_label=(args.source or "claude"))
         # Optional: capture clipboard (optionally copying from frontmost first)
         if args.copy_frontmost:
             # Best-effort: requires Accessibility permissions
             try:
-                subprocess.check_call(["osascript", "-e", 'tell application "System Events" to keystroke "a" using {command down}'])
-                subprocess.check_call(["osascript", "-e", 'tell application "System Events" to keystroke "c" using {command down}'])
+                subprocess.check_call(
+                    ["osascript", "-e", 'tell application "System Events" to keystroke "a" using {command down}'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                subprocess.check_call(
+                    ["osascript", "-e", 'tell application "System Events" to keystroke "c" using {command down}'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
             except Exception:
-                # Non-fatal; proceed with whatever is on clipboard (or nothing)
+                # Non-fatal; proceed with whatever is already on the clipboard.
                 pass
         if args.from_clipboard:
             try:
@@ -395,14 +420,6 @@ def main():
             except Exception:
                 # Ignore clipboard failures silently to keep UX smooth
                 pass
-        # Optional: pull agent transcript(s)
-        if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
-            auto_pull()
-        else:
-            if args.pull_codex:
-                ingest_latest_from_codex(source_label=(args.source or "codex"))
-            if args.pull_claude:
-                ingest_latest_from_claude(source_label=(args.source or "claude"))
         # Finally, emit a pack so it can be pasted into the chat
         sys.stdout.write(pack(ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
     elif args.cmd == "resume":

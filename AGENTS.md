@@ -1,0 +1,28 @@
+# ContextFun Agent Guide
+
+Use the installed ContextFun commands directly when the user types them as a message.
+
+Supported chat-style commands in this repo:
+
+- `ctx-list`
+  - Run `ctx-list`.
+  - If that is unavailable, run `python3 scripts/ctx_cmd.py list`.
+  - Return stdout directly.
+
+- `ctx-start [--pull] <workstream>`
+  - Treat `--pull` strictly as a flag, never as part of the workstream name.
+  - Run `ctx-start [--pull] <workstream>`.
+  - If that is unavailable, run `python3 scripts/ctx_cmd.py start [--pull] <workstream> --format markdown`.
+  - Return the emitted markdown pack directly.
+
+- `ctx-resume <workstream>`
+  - Run `ctx-resume <workstream>`.
+  - If that is unavailable, run `python3 scripts/ctx_cmd.py resume <workstream> --format markdown`.
+  - Return the emitted markdown pack directly.
+
+Behavior notes:
+
+- Claude Code supports local skill folders under `~/.claude/skills`.
+- Codex does not currently support repo-defined custom slash commands like `/ctx-list`.
+- In Codex, prefer plain `ctx-list`, `ctx-start`, and `ctx-resume` messages or run the same commands in the terminal.
+- If `CTX_AGENT_WORKSTREAM` is set, it is the default workstream when the command omits a name.

@@ -5,7 +5,7 @@ set -euo pipefail
 # Usage:
 #   scripts/install_skills.sh --codex-dir ~/.codex/skills --claude-dir ~/.claude/skills
 
-ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd)
+ROOT_DIR=$(cd "$(dirname "$0")/.." && pwd -P)
 # Defaults based on common locations; override via flags or env vars
 CODEX_DIR="${CODEX_SKILLS_DIR:-}"
 CLAUDE_DIR="${CLAUDE_SKILLS_DIR:-}"
@@ -29,10 +29,11 @@ if [[ -n "$CODEX_DIR" ]]; then
   echo "[Codex] Target: $CODEX_DIR"
   mkdir -p "$CODEX_DIR"
   for d in "$ROOT_DIR/skills/codex"/*; do
+    [[ -f "$d/SKILL.md" ]] || continue
     name=$(basename "$d")
     src="$d"
     dst="$CODEX_DIR/$name"
-    rm -f "$dst" 2>/dev/null || true
+    rm -rf "$dst" 2>/dev/null || true
     ln -s "$src" "$dst"
     echo "  - Linked $name"
   done
@@ -44,15 +45,15 @@ fi
 if [[ -n "$CLAUDE_DIR" ]]; then
   echo "[Claude] Target: $CLAUDE_DIR"
   mkdir -p "$CLAUDE_DIR"
-for d in "$ROOT_DIR/skills/claude"/*; do
-  [[ -f "$d/SKILL.md" ]] || continue
-  name=$(basename "$d")
-  src="$d"
-  dst="$CLAUDE_DIR/$name"
-  rm -f "$dst" 2>/dev/null || true
-  ln -s "$src" "$dst"
-  echo "  - Linked $name"
-done
+  for d in "$ROOT_DIR/skills/claude"/*; do
+    [[ -f "$d/SKILL.md" ]] || continue
+    name=$(basename "$d")
+    src="$d"
+    dst="$CLAUDE_DIR/$name"
+    rm -rf "$dst" 2>/dev/null || true
+    ln -s "$src" "$dst"
+    echo "  - Linked $name"
+  done
 fi
 
 cat <<EOF

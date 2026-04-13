@@ -28,11 +28,19 @@ for a in "$@"; do
   fi
 done
 
-NAME="${NAME_TOKENS[*]:-}"
+NAME="${NAME_TOKENS[*]:-${CTX_AGENT_WORKSTREAM:-}}"
+CMD=(--format markdown --source codex)
+if [[ ${#FLAGS[@]} -gt 0 ]]; then
+  CMD=("${FLAGS[@]}" "${CMD[@]}")
+fi
+if [[ -n "$NAME" ]]; then
+  CMD+=("$NAME")
+fi
 
-exec python3 "$REPO/scripts/skills/ctx_start_skill.py" \
-  ${NAME:+--name "$NAME"} \
-  --agent codex \
-  --format markdown \
-  --source codex \
-  "${FLAGS[@]}"
+if command -v ctx-start >/dev/null 2>&1; then
+  exec ctx-start "${CMD[@]}"
+elif command -v ctx >/dev/null 2>&1; then
+  exec ctx start "${CMD[@]}"
+else
+  exec python3 "$REPO/scripts/ctx_cmd.py" start "${CMD[@]}"
+fi

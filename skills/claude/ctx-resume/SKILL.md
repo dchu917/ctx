@@ -1,15 +1,16 @@
 ---
 name: ctx resume
-description: Resume a ContextFun workstream, auto-pull latest Claude/Codex transcript, copy a resume pack, and print a status line.
+description: Resume a ContextFun workstream and print a markdown pack.
 ---
 
 Usage
 - In chat:
-  - /ctx list — lists workstreams
-  - /ctx <workstream> — resumes that workstream (markdown pack)
-- Backing command: `scripts/skills/ctx_cli_skill.sh`
-  - `./scripts/skills/ctx_cli_skill.sh list`
-  - `./scripts/skills/ctx_cli_skill.sh "<workstream>"`
+  - `/ctx resume <workstream>` — resumes that workstream
+  - If `CTX_AGENT_WORKSTREAM` is set, the name can be omitted
+
+What it runs
+- `./scripts/skills/ctx_resume.sh`
+- Falls back to `ctx resume` or `python3 scripts/ctx_cmd.py resume`
 
 Notes
 - Uses local transcript storage (default `~/.claude/projects`, `~/.codex/sessions`).

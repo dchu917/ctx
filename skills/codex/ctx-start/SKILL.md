@@ -1,21 +1,21 @@
 ---
 name: ctx-start
-description: Start a new ContextFun session in a workstream, auto-pull latest transcript, copy a pack, and print a status line.
+description: Start a new ContextFun session in a workstream and print a markdown pack.
 ---
 
 What it does
 - Ensures/selects a workstream and creates a new session.
 - Imports the newest transcript from Codex/Claude (local storage).
-- Generates a compact pack (markdown) and copies it to the clipboard.
-- Emits a status line: "Context for [slug] ingested. S<id> created. Last: <type> — <preview>".
+- Prints a compact markdown pack that can be pasted back into the chat.
 
 How to trigger
-- In chat:
-  - /ctx-start <workstream>
-  - /ctx-start --pull <workstream> (also ingests current chat)
+- In Codex:
+  - `ctx-start <workstream>`
+  - `ctx-start --pull <workstream>` (also ingests current chat)
+  - `--pull` can appear before or after the workstream name
 - Run from terminal:
-  - `python3 scripts/skills/ctx_start_skill.py --name "<workstream>" --agent codex`
-  - Add `--pull` to ingest, `--paste` to auto-paste pack (macOS)
+  - `ctx-start my-workstream`
+  - `python3 scripts/ctx_cmd.py start my-workstream --format markdown`
 
 Requirements
 - Python 3.9+

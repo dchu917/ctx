@@ -99,8 +99,16 @@ def _pack(slug: str, fmt: str = "markdown") -> str:
 def _ingest_from_frontmost(workstream_slug: str, fmt: str = "markdown", source: typing.Optional[str] = None) -> None:
     # macOS: select all + copy the chat content from frontmost app, then ingest into the latest session of the workstream
     try:
-        subprocess.check_call(["osascript", "-e", 'tell application "System Events" to keystroke "a" using {command down}'])
-        subprocess.check_call(["osascript", "-e", 'tell application "System Events" to keystroke "c" using {command down}'])
+        subprocess.check_call(
+            ["osascript", "-e", 'tell application "System Events" to keystroke "a" using {command down}'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.check_call(
+            ["osascript", "-e", 'tell application "System Events" to keystroke "c" using {command down}'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except Exception:
         # Best-effort; continue with whatever is on clipboard
         pass

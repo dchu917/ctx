@@ -1,7 +1,7 @@
 ContextFun
 ===========
 
-Capture, organize, and resume coding context across agents (Claude, Codex, etc.) using a tiny local CLI backed by SQLite. ContextFun introduces Workstreams so you can group sessions by goal and instantly “resume” from any agent with a single slash-style command.
+Capture, organize, and resume coding context across agents (Claude, Codex, etc.) using a tiny local CLI backed by SQLite. ContextFun introduces Workstreams so you can group sessions by goal and resume from either Claude Code or Codex with the command style each client actually supports.
 
 Features
 --------
@@ -10,7 +10,7 @@ Features
 - Sessions: Create, list, show, and auto-link to a workstream.
 - Entries: Add notes, decisions, todos, files, links (stdin and snapshots supported).
 - Resume packs: Compact text/Markdown packs for pasting into any agent.
-- Slash flow: One-liner shim to support `/ctx --new`, `/ctx`, and `/ctx list` in chats.
+- Agent commands: Claude Code skills plus `ctx-list`, `ctx-start`, and `ctx-resume` executables for Codex.
 - Local-first: Pure stdlib, SQLite; no cloud or API keys. Global DB supported.
 
 Install (1-liner)
@@ -18,8 +18,7 @@ Install (1-liner)
 
 Run once locally to install a shared DB and `ctx` shim in `~/.contextfun` (no git needed):
 
-curl -fsSL https://raw.githubusercontent.com/dchu917/contextfun/main/scripts/install.sh | bash
-```
+`curl -fsSL https://raw.githubusercontent.com/dchu917/contextfun/main/scripts/install.sh | bash`
 
 Agent bootstrap (1-liner)
 -------------------------
@@ -96,90 +95,70 @@ Basic Usage
   - Brief header only: `python -m contextfun pack --workstream-slug proj-auth-refactor --brief`
   - Or use the convenience wrapper with preamble: `python -m contextfun resume --workstream-slug proj-auth-refactor --format markdown`
 
-Slash Flow in Chats
--------------------
+Quickstart
+----------
 
-You can type these in Claude/Codex chats if you use a text expander (Espanso/Keyboard Maestro/Raycast) to execute and paste results:
+After cloning this repo, run:
 
-- `/ctx --new My Workstream` → ensure/create workstream, set current, create session, paste pack
-- `/ctx My Workstream` → ensure/create workstream, set current, paste pack
-- `/ctx -start My Workstream` → ensure/create workstream, set current, create session, optionally ingest clipboard, optionally pull latest Codex/Claude transcript, paste pack
-- `/ctx -resume My Workstream` → ensure/create workstream, set current, optionally pull latest transcript, paste pack
-- `/ctx list` → list all workstreams
+- `bash scripts/quickstart.sh`
+
+That local setup does all of the following:
+
+- Creates `./.contextfun/context.db`
+- Writes `./ctx.env`
+- Installs repo-backed `ctx-list`, `ctx-start`, and `ctx-resume` shims into `~/.contextfun/bin`
+- Links local skill folders into `~/.claude/skills` and `~/.codex/skills`
+
+Agent Commands
+--------------
+
+Claude Code:
+
+- Restart Claude Code after running quickstart.
+- Use `/ctx list`
+- Use `/ctx start my-workstream --pull`
+- Use `/ctx resume my-workstream`
+
+Codex:
+
+- Restart Codex after running quickstart.
+- Use `ctx-list`
+- Use `ctx-start my-workstream`
+- Use `ctx-start --pull my-workstream`
+- Use `ctx-resume my-workstream`
+
+Codex note:
+
+- Codex does not currently expose repo-defined custom slash commands like `/ctx-list`.
+- The supported Codex path is installed `ctx-*` executables plus the repo `AGENTS.md`.
 
 Agent Setup Tips
 ----------------
 
-- Add shell aliases (optional):
-  - `alias ctx='python -m contextfun'`
-  - Common flows: `ctx workstream-set-current --slug <slug>`; `ctx session-new "..."`; `ctx add-latest --type note --text "..."`; `ctx pack --format markdown`.
 - Optional global store across apps:
   - `export CONTEXTFUN_DB="$HOME/.contextfun/context.db"`
-  - The `scripts/ctx_cmd.py` shim will pass `--db` automatically when this env var is set, so `/ctx` works everywhere with one DB.
-- With Claude / Codex / others: Start a new chat by pasting the output of `ctx resume --workstream-slug <slug> --format markdown`.
-- For quick capture during coding: pipe diffs or logs into the latest session in the current workstream:
+- For quick capture during coding:
   - `git diff | ctx add-latest --type note --text -`
-- Consider a global store by setting `--db ~/.contextfun/context.db` in your aliases if you want cross-repo continuity.
+- For per-agent defaults:
+  - `export CTX_AGENT_WORKSTREAM="my-workstream"`
 
-Skills: One-line Resume
------------------------
+Automation Helpers
+------------------
 
-Add the packaged skill so typing `/ctx resume` in Codex/Claude can ingest context and acknowledge it:
+The Python helpers under `scripts/skills/` are for clipboard and automation workflows such as Raycast or Keyboard Maestro. They are not the primary Claude/Codex skill entrypoints.
 
-- Skill script: `scripts/skills/ctx_resume_skill.py`
-  - Behavior: Ensures/selects a workstream, auto-pulls the newest Codex/Claude transcript, generates a pack (markdown by default) and copies it to clipboard (unless `--no-copy`), then prints a status line like:
-    - `Context for workstream [my-stream] ingested. Last: note — <preview>`
-  - Usage:
-    - Current or latest workstream: `python3 scripts/skills/ctx_resume_skill.py`
-    - Specific: `python3 scripts/skills/ctx_resume_skill.py --name "my-stream"`
-    - Paste into frontmost (macOS): add `--paste`
-    - Skip pack copy: add `--no-pack` or `--no-copy`
-  - Env: respects `CONTEXTFUN_DB`, `CODEX_HOME`, `CLAUDE_HOME`, and default auto-pull.
+- `python3 scripts/skills/ctx_resume_skill.py --name "my-workstream" --paste`
+- `python3 scripts/skills/ctx_start_skill.py --name "my-workstream" --agent codex --pull --paste`
 
-- Map to a slash in your chat tool:
-  - Claude/Codex via Espanso:
-    - trigger: "/ctx resume"
-      replace: "$(python3 /absolute/path/to/repo/scripts/skills/ctx_resume_skill.py)"
-  - Keyboard Maestro: regex `/ctx\s+resume(?:\s+(.+))?` → run:
-    - `python3 scripts/skills/ctx_resume_skill.py ${1}`
+Install skills into Codex/Claude
+--------------------------------
 
-Skills: One-line Start
-----------------------
-
-- Skill script: `scripts/skills/ctx_start_skill.py`
-  - Behavior: Ensures/selects a workstream, creates a new session (agent from `CTX_AGENT_DEFAULT`), auto-pulls newest transcript, generates a pack (markdown by default) and copies it to clipboard (unless `--no-copy`), then prints:
-    - `Context for workstream [my-stream] ingested. S<id> created. Last: <type> — <preview>`
-  - Usage:
-    - `python3 scripts/skills/ctx_start_skill.py --name "my-stream"`
-    - macOS paste into frontmost: add `--paste`
-
-- Slash mappings:
-  - Espanso:
-    - trigger: "/ctx start"
-      replace: "$(python3 /absolute/path/to/repo/scripts/skills/ctx_start_skill.py)"
-  - Keyboard Maestro regex:
-    - Trigger: `/ctx\s+start(?:\s+(.+))?`
-    - Action: `python3 scripts/skills/ctx_start_skill.py ${1}`
-
-Keyboard Maestro: Auto-paste status line
----------------------------------------
-
-For both resume/start, add a Paste action after the shell script to paste the printed status line back into chat:
-
-- Macro steps (per command):
-  - Execute Shell Script: `python3 /absolute/path/scripts/skills/ctx_resume_skill.py ${1}`
-  - Set System Clipboard to `%ExecuteShellScript%`
-  - Type Keystroke: Cmd+V
-
-Raycast: Quick Scripts
----------------------
-
-- Create Script Commands that run the skills and paste the status line:
-  - Resume script (Bash):
-    - `#!/usr/bin/env bash`
-    - `python3 "$HOME/path/context-fun/scripts/skills/ctx_resume_skill.py" "$@" | pbcopy`
-    - `osascript -e 'tell application "System Events" to keystroke "v" using {command down}'`
-  - Start script: same but call `ctx_start_skill.py`.
+- Local symlink install:
+  - `bash scripts/install_skills.sh`
+- Official Codex install path:
+  - Install the repo-backed Codex skills into `~/.codex/skills` from GitHub using the `skill-installer` helper, or symlink them locally with `scripts/install_skills.sh`.
+- If your apps use non-default skill directories, override with:
+  - `CODEX_SKILLS_DIR=/custom/codex/skills CLAUDE_SKILLS_DIR=/custom/claude/skills bash scripts/install_skills.sh`
 
 
 Pull transcripts from Codex / Claude
@@ -195,67 +174,36 @@ Pull transcripts from Codex / Claude
   - Claude Code: scans `CLAUDE_HOME/projects` (default `~/.claude/projects`) for the most recent `*.jsonl`/`*.json` transcript.
   - Parsed roles/content are heuristic and best-effort across common JSON/JSONL shapes.
 
-Install skills into Codex/Claude
---------------------------------
+Slash-like command in any chat (optional)
+-----------------------------------------
 
-- One-shot installer (uses common defaults, override via env/flags):
-  - `CODEX_SKILLS_DIR=~/.codex/skills CLAUDE_SKILLS_DIR=~/.claude/skills bash scripts/install_skills.sh`
-  - Or explicitly: `bash scripts/install_skills.sh --codex-dir ~/.codex/skills --claude-dir ~/.claude/skills`
-- Each skill bundle has a `SKILL.md` with usage and points to scripts/skills/*.
-- If your official docs specify different skill directories, set `CODEX_SKILLS_DIR` / `CLAUDE_SKILLS_DIR` accordingly.
-
-Agent-level defaults
---------------------
-
-- Bind an agent to a specific workstream without shell state by setting:
-  - `export CTX_AGENT_WORKSTREAM="my-workstream"`
-- The packaged skills and flows prefer `CTX_AGENT_WORKSTREAM` when `--name` is omitted.
-
-Slash-like command in any chat (Espanso)
-----------------------------------------
-
-If you want to type `/workstreams <slug>` in any text box (Claude, etc.) and have it expand to your resume pack:
+If you want to type `/ctx ...` in any text box and have it expand to a ContextFun pack:
 
 1) Install Espanso (open-source text expander): https://espanso.org
 2) Create a match file, for example `~/.config/espanso/match/contextfun.yml` with:
 
-   - trigger: "/ctx --new {{name}}"
-     replace: "$(python3 /absolute/path/to/your/repo/scripts/ctx_cmd.py new \"{{name}}\")"
-     vars:
-       - name: name
-         type: clipboard  # or 'prompt' if supported in your Espanso version
-
    - trigger: "/ctx list"
      replace: "$(python3 /absolute/path/to/your/repo/scripts/ctx_cmd.py list)"
 
-   - trigger: "/ctx {{name}}"
-     replace: "$(python3 /absolute/path/to/your/repo/scripts/ctx_cmd.py go \"{{name}}\")"
-     vars:
-       - name: name
-         type: clipboard
-
-   - trigger: "/ctx -start {{name}}"
+   - trigger: "/ctx start {{name}}"
      replace: "$(python3 /absolute/path/to/your/repo/scripts/ctx_cmd.py start \"{{name}}\" --format markdown)"
      vars:
        - name: name
          type: clipboard
 
-   - trigger: "/ctx -resume {{name}}"
+   - trigger: "/ctx resume {{name}}"
      replace: "$(python3 /absolute/path/to/your/repo/scripts/ctx_cmd.py resume \"{{name}}\" --format markdown)"
      vars:
        - name: name
          type: clipboard
 
-3) Reload Espanso. Now typing `/workstreams proj-demo` in Claude will expand to your pack. You can use a dynamic script to list slugs too; see Espanso docs for `shell` variable types.
+3) Reload Espanso. Now typing `/ctx start proj-demo` or `/ctx resume proj-demo` in any app will expand to your pack. You can use a dynamic script to list slugs too; see Espanso docs for `shell` variable types.
 
 Alternative (Keyboard Maestro / Raycast)
 ----------------------------------------
 
-- Keyboard Maestro: Create macros:
-  - "ctx new": Trigger regex `/ctx\s+--new\s+(.+)` → Action: `python3 scripts/ctx_cmd.py new "$1" | pbcopy` → Paste.
-  - "ctx go": Trigger regex `/ctx\s+(.+)` → Action: `python3 scripts/ctx_cmd.py go "$1" | pbcopy` → Paste.
-  - "ctx list": Trigger regex `/ctx\s+list` → Action: `python3 scripts/ctx_cmd.py list | pbcopy` → Paste.
-- Raycast: Add a Script Command (Bash or Python) that forwards to `scripts/ctx_cmd.py` with `new`, `go`, or `list` and pastes output.
+- Keyboard Maestro: Create macros for `/ctx list`, `/ctx start <name>`, and `/ctx resume <name>` that call `scripts/ctx_cmd.py` and paste stdout.
+- Raycast: Add Script Commands that forward to `scripts/ctx_cmd.py list|start|resume` and paste output.
 
 Automatic Copy/Paste (macOS)
 ----------------------------
@@ -270,14 +218,8 @@ If you want to trigger copy/paste automatically from the frontmost app (Claude/C
   - `bash scripts/mac_paste_pack.sh "My Workstream" --format markdown --focus decision,todo`
   - Copies the pack to clipboard and sends Cmd+V to paste.
 
-One-liner behavior via `-start`/`-resume`:
-
-- If you prefer a single slash command inside chats:
-  - `/ctx -start My Workstream` → ensures and selects the workstream, creates a session, optionally ingests the clipboard, optionally pulls the newest transcript from Codex or Claude, and outputs the resume pack to paste.
-  - `/ctx -resume My Workstream` → ensures and selects the workstream, optionally pulls the newest transcript, and outputs the resume pack to paste.
-
 Tips:
-- To truly “auto-capture” the chat, chain a keystroke copy before expansion (Keyboard Maestro) or run `mac_copy_and_ingest.sh` first, then expand `/ctx -start ...`.
+- To truly “auto-capture” the chat, chain a keystroke copy before expansion (Keyboard Maestro) or run `mac_copy_and_ingest.sh` first, then expand `/ctx start ...`.
 - Set `CTX_SOURCE_DEFAULT=claude` or `codex` to label captured entries.
 - To pull from agent storage directly, set env vars if needed: `CODEX_HOME=~/.codex`, `CLAUDE_HOME=~/.claude` (defaults are used if unset). The importer looks under `~/.codex/sessions/` and `~/.claude/projects/` for the newest `*.jsonl` transcript.
 
@@ -334,16 +276,3 @@ FAQ
   - A: No. Everything is local, pure Python stdlib.
 - Q: Can multiple repos share the same context?
   - A: Yes. Set `CONTEXTFUN_DB` to a single global path and both Claude/Codex will use the same DB.
-Quickstart
-----------
-
-After cloning this repo, run the quickstart script to initialize a local store and print next steps:
-
-- Local project setup:
-  - `bash scripts/quickstart.sh`
-  - Creates `./.contextfun/context.db`, writes `./ctx.env` with handy alias, and runs a smoke test.
-  - Then follow the printed instructions to add the `/ctx` skill to Codex or Claude Code.
-
-- Global setup (optional):
-  - `bash scripts/quickstart.sh --global`
-  - Installs a shared CLI into `~/.contextfun` so `ctx` is available everywhere.

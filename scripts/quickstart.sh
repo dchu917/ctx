@@ -4,13 +4,15 @@ set -euo pipefail
 # ContextFun Quickstart (run after cloning this repo)
 # - Initializes a local DB in ./.contextfun
 # - Creates a project env file with handy aliases
-# - Shows how to add the /ctx skill to Codex/Claude Code
+# - Installs repo-backed shims and local skill links for Claude/Codex
+# - Prints the exact commands that work in each agent
 
 usage() {
   cat <<EOF
 Usage: $0 [--global]
 
-Without flags, sets up a project-local ContextFun store under ./.contextfun and writes ./ctx.env.
+Without flags, sets up a project-local ContextFun store under ./.contextfun, writes ./ctx.env,
+installs repo-backed ctx-* shims, and links skills into ~/.claude/skills and ~/.codex/skills.
 Use --global to install a shared CLI into ~/.contextfun (requires PATH update; see output).
 EOF
 }
@@ -41,39 +43,43 @@ if $GLOBAL; then
   PYTHONPATH="$HOME/.contextfun/lib" python3 -m contextfun --db "$HOME/.contextfun/context.db" init >/dev/null || true
   echo "\nDone. You can now run: ctx list"
 else
-  echo "[1/4] Initializing project-local DB at $DB_LOCAL"
+  echo "[1/5] Initializing project-local DB at $DB_LOCAL"
   mkdir -p "$(dirname "$DB_LOCAL")"
   python3 -m contextfun --db "$DB_LOCAL" init >/dev/null || true
 
   ENV_FILE="$ROOT_DIR/ctx.env"
-  echo "[2/4] Writing project env to $ENV_FILE"
+  echo "[2/5] Writing project env to $ENV_FILE"
   cat > "$ENV_FILE" <<EOF
 # ContextFun project environment
 export CONTEXTFUN_DB="$DB_LOCAL"
 alias ctx-local='python3 "$ROOT_DIR/scripts/ctx_cmd.py"'
 EOF
 
-  echo "[3/4] Smoke test (list workstreams)"
+  echo "[3/5] Installing repo-backed ctx-* shims into ~/.contextfun/bin"
+  bash "$ROOT_DIR/scripts/install_shims.sh"
+
+  echo "[4/5] Linking local skills into ~/.claude/skills and ~/.codex/skills"
+  bash "$ROOT_DIR/scripts/install_skills.sh"
+
+  echo "[5/5] Smoke test (list workstreams)"
   # shellcheck disable=SC1090
   source "$ENV_FILE"
   python3 "$ROOT_DIR/scripts/ctx_cmd.py" list || true
 
-  echo "[4/4] Next steps"
+  echo "Next steps"
   cat <<'NEXT'
 - Activate this project env in new shells: source ./ctx.env
-- Resume or start via local shim:
-  - Resume: python3 scripts/skills/ctx_resume_skill.py --name "my-stream"
-  - Start:  python3 scripts/skills/ctx_start_skill.py --name "my-stream" --agent codex
-
-To use this inside Codex or Claude Code chats as "/ctx resume" or "/ctx start",
-add a skill/expansion that runs the scripts above and pastes the status line:
-- Espanso: map "/ctx resume" to run ctx_resume_skill.py; "/ctx start" to ctx_start_skill.py
-- Keyboard Maestro: create macros that execute the scripts, pipe to pbcopy, then Cmd+V
-- Raycast: Script Commands that run the scripts, pipe to pbcopy, then paste via AppleScript
+- Claude Code:
+  - Restart Claude Code, then use `/ctx list`, `/ctx start my-stream --pull`, `/ctx resume my-stream`
+- Codex:
+  - Restart Codex, then use `ctx-list`, `ctx-start --pull my-stream`, `ctx-resume my-stream`
+  - Codex does not currently support custom repo-defined slash commands like `/ctx-list`.
+- Optional automation helpers for paste/status workflows:
+  - `python3 scripts/skills/ctx_resume_skill.py --name "my-stream" --paste`
+  - `python3 scripts/skills/ctx_start_skill.py --name "my-stream" --agent codex --pull --paste`
 
 Tip: For a global setup across projects, rerun this script with --global and use 'ctx'.
 NEXT
 fi
 
 echo "\nQuickstart complete."
-
