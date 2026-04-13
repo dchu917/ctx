@@ -1,5 +1,5 @@
 ---
-name: ctx start
+name: ctx-start
 description: Start a new ContextFun session in a workstream, auto-pull latest transcript, copy a pack, and print a status line.
 ---
 
@@ -11,8 +11,8 @@ What it does
 
 How to trigger
 - In chat:
-  - /ctx start <workstream>
-  - /ctx start <workstream> --pull (also ingests current chat)
+  - /ctx-start <workstream>
+  - /ctx-start --pull <workstream> (also ingests current chat)
 - Run from terminal:
   - `python3 scripts/skills/ctx_start_skill.py --name "<workstream>" --agent codex`
   - Add `--pull` to ingest, `--paste` to auto-paste pack (macOS)

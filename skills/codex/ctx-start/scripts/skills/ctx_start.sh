@@ -21,9 +21,7 @@ fi
 NAME_TOKENS=()
 FLAGS=()
 for a in "$@"; do
-  if [[ ${#FLAGS[@]} -eq 0 && "$a" == --* ]]; then
-    FLAGS+=("$a")
-  elif [[ ${#FLAGS[@]} -gt 0 ]]; then
+  if [[ "$a" == --* ]]; then
     FLAGS+=("$a")
   else
     NAME_TOKENS+=("$a")
@@ -38,4 +36,3 @@ exec python3 "$REPO/scripts/skills/ctx_start_skill.py" \
   --format markdown \
   --source codex \
   "${FLAGS[@]}"
-

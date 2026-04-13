@@ -117,8 +117,9 @@ def _ingest_from_frontmost(workstream_slug: str, fmt: str = "markdown", source: 
     if source:
         args += ["--source", source]
     try:
-        subprocess.check_call(args, input=clip.encode(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except subprocess.CalledProcessError:
+        proc = subprocess.run(args, input=clip.encode(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _ = proc.returncode  # ignore
+    except Exception:
         pass
 
 

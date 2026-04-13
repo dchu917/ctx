@@ -1,5 +1,5 @@
 ---
-name: ctx resume
+name: ctx-resume
 description: Resume a ContextFun workstream, auto-pull latest Codex/Claude transcript, copy a resume pack, and print a status line.
 ---
 
@@ -18,4 +18,3 @@ Requirements
 - Python 3.9+
 - Local transcripts in `~/.codex/sessions` or `~/.claude/projects` (override via `CODEX_HOME`/`CLAUDE_HOME`).
 - ContextFun DB (local or global). Use `scripts/quickstart.sh` to initialize.
-

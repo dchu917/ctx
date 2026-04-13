@@ -22,6 +22,4 @@ NAME="${*:-}"
 
 exec python3 "$REPO/scripts/skills/ctx_resume_skill.py" \
   ${NAME:+--name "$NAME"} \
-  --format markdown \
-  --source claude
-
+  --format markdown
