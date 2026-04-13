@@ -44,6 +44,10 @@ cd ctx
 ctx web --open
 ```
 
+![ctx frontend](docs/frontend.png)
+
+Run `ctx web --open` in the terminal or in the agent shell.
+
 3. Start a new workstream:
 
 Claude Code:
@@ -100,7 +104,7 @@ Then restart your client.
 
 ## Browser Frontend
 
-Start the local browser UI:
+Open the local browser UI from the terminal or the agent shell:
 
 ```bash
 ctx web --open
