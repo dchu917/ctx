@@ -4,7 +4,7 @@ description: List available ContextFun workstreams
 ---
 
 Usage
-- /ctx list — prints workstreams
+- /ctx list — prints workstreams with a one-line goal/latest-task summary
 
 What it runs
 - `bash ./scripts/skills/ctx_cli_skill.sh`

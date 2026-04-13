@@ -44,7 +44,11 @@ cat > "$BIN_DIR/ctx-start" <<EOF_SH
 #!/usr/bin/env bash
 exec "$BIN_DIR/ctx" start "$@"
 EOF_SH
-chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start"
+cat > "$BIN_DIR/ctx-delete" <<EOF_SH
+#!/usr/bin/env bash
+exec "$BIN_DIR/ctx" delete "$@"
+EOF_SH
+chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete"
 
 SHELL_RC=""
 if [[ -n "${ZSH_VERSION:-}" ]]; then SHELL_RC="$HOME/.zshrc"; fi
@@ -72,6 +76,7 @@ Try:
   ctx-start my-workstream
   ctx-start --pull my-workstream
   ctx-resume my-workstream
+  ctx-delete my-workstream
   python3 -m contextfun --help
 
 For Claude/Codex terminals, use the agent bootstrap one-liner from README.

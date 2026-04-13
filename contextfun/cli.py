@@ -278,6 +278,42 @@ def cmd_session_show(args: argparse.Namespace):
             print("")
 
 
+def _attachment_roots_for_session(db_path: Path, session_id: int) -> list[Path]:
+    roots = [db_path.parent / "attachments" / str(session_id)]
+    legacy_root = ATTACH_DIR / str(session_id)
+    if legacy_root not in roots:
+        roots.append(legacy_root)
+    return roots
+
+
+def _delete_session_attachments(db_path: Path, session_id: int) -> None:
+    for root in _attachment_roots_for_session(db_path, session_id):
+        if root.exists():
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def cmd_session_delete(args: argparse.Namespace):
+    db = Path(args.db)
+    init_db(db, quiet=True)
+    with connect(db) as conn:
+        row = conn.execute(
+            "SELECT s.*, w.slug as workstream_slug FROM session s "
+            "LEFT JOIN workstream w ON s.workstream_id = w.id "
+            "WHERE s.id = ?",
+            (args.id,),
+        ).fetchone()
+        if not row:
+            print(f"Session {args.id} not found", file=sys.stderr)
+            sys.exit(1)
+        conn.execute("DELETE FROM session WHERE id = ?", (args.id,))
+        conn.commit()
+
+    _delete_session_attachments(db, args.id)
+
+    workstream = f" #{row['workstream_slug']}" if row["workstream_slug"] else ""
+    print(f"Deleted session {row['id']}: {row['title']}{workstream}")
+
+
 def _resolve_workstream_id(conn: sqlite3.Connection, *, slug=None, wid=None) -> int:
     if wid is not None:
         row = conn.execute("SELECT id FROM workstream WHERE id = ?", (wid,)).fetchone()
@@ -366,11 +402,59 @@ def cmd_workstream_new(args: argparse.Namespace):
     print(wid)
 
 
-def _print_workstreams(rows: list[sqlite3.Row]):
+def _preview_text(text, limit: int = 100) -> str:
+    if not text:
+        return ""
+    collapsed = " ".join(text.strip().split())
+    if len(collapsed) > limit:
+        return collapsed[: limit - 3] + "..."
+    return collapsed
+
+
+def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
+    goal = row["title"]
+    if row["metadata"]:
+        try:
+            meta = json.loads(row["metadata"]) or {}
+            goal = meta.get("summary") or goal
+        except Exception:
+            pass
+    if not goal and row["description"]:
+        goal = row["description"]
+    elif row["description"] and goal == row["title"]:
+        goal = row["description"]
+    goal = _preview_text(goal, limit=70) or row["title"]
+
+    latest_session = conn.execute(
+        "SELECT title FROM session WHERE workstream_id = ? ORDER BY id DESC LIMIT 1",
+        (row["id"],),
+    ).fetchone()
+    latest_entry = conn.execute(
+        "SELECT e.content FROM entry e "
+        "JOIN session s ON s.id = e.session_id "
+        "WHERE s.workstream_id = ? ORDER BY e.id DESC LIMIT 1",
+        (row["id"],),
+    ).fetchone()
+
+    latest_task = ""
+    if latest_session and latest_session["title"] not in {"New session", "Auto-ingest session"}:
+        latest_task = latest_session["title"]
+    if latest_entry and latest_entry["content"]:
+        latest_task = _preview_text(latest_entry["content"], limit=90) or latest_task
+    if not latest_task and latest_session:
+        latest_task = latest_session["title"]
+    if not latest_task:
+        latest_task = "No sessions yet"
+
+    return f"goal: {goal} | latest: {_preview_text(latest_task, limit=90)}"
+
+
+def _print_workstreams(rows: list[sqlite3.Row], conn: sqlite3.Connection):
     for r in rows:
         tags = f" [{r['tags']}]" if r["tags"] else ""
         ws = f" ({r['workspace']})" if r["workspace"] else ""
-        print(f"{r['id']}: {r['slug']} - {r['title']}{tags}{ws} - {r['created_at']}")
+        summary = _workstream_one_line_summary(conn, r)
+        print(f"{r['id']}: {r['slug']} - {r['title']}{tags}{ws} - {summary}")
 
 
 def cmd_workstream_list(args: argparse.Namespace):
@@ -390,11 +474,11 @@ def cmd_workstream_list(args: argparse.Namespace):
     sql = " ".join(q)
     with connect(db) as conn:
         rows = conn.execute(sql, params).fetchall()
-    if args.format == "slugs":
-        for r in rows:
-            print(r["slug"]) 
-    else:
-        _print_workstreams(rows)
+        if args.format == "slugs":
+            for r in rows:
+                print(r["slug"])
+        else:
+            _print_workstreams(rows, conn)
 
 
 def cmd_workstream_show(args: argparse.Namespace):
@@ -1007,6 +1091,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_args(p_s_show)
     p_s_show.add_argument("id", type=int, help="Session id")
     p_s_show.set_defaults(func=cmd_session_show)
+
+    # session delete
+    p_s_del = sp.add_parser("session-delete", help="Delete a session by id")
+    add_common_args(p_s_del)
+    p_s_del.add_argument("id", type=int, help="Session id")
+    p_s_del.set_defaults(func=cmd_session_delete)
 
     # add entry
     p_add = sp.add_parser("add", help="Add an entry to a session")

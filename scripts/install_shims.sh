@@ -37,17 +37,27 @@ ROOT_DIR="__ROOT_DIR__"
 exec python3 "$ROOT_DIR/scripts/ctx_cmd.py" start "$@" --format markdown
 SH
 
-for shim in "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start"; do
+cat > "$BIN_DIR/ctx-delete" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if command -v ctx >/dev/null 2>&1; then
+  exec ctx delete "$@"
+fi
+ROOT_DIR="__ROOT_DIR__"
+exec python3 "$ROOT_DIR/scripts/ctx_cmd.py" delete "$@"
+SH
+
+for shim in "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete"; do
   perl -0pi -e 's|__ROOT_DIR__|'"$ROOT_DIR"'|g' "$shim"
 done
 
-chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start"
+chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete"
 
 case ":${PATH}:" in
   *":${BIN_DIR}:"*) :;;
   *) echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$HOME/.zshrc";;
 esac
 
-echo "Installed repo-backed shims to $BIN_DIR: ctx-list, ctx-resume, ctx-start"
+echo "Installed repo-backed shims to $BIN_DIR: ctx-list, ctx-resume, ctx-start, ctx-delete"
 echo "These call the cloned repo at $ROOT_DIR when a global 'ctx' is not installed."
 echo "If not already present, PATH was updated in ~/.zshrc. Open a new shell to pick up changes."

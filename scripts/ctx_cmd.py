@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -65,6 +66,31 @@ def pack(slug, focus=None, fmt="markdown", brief=False):
     if brief:
         args.append("--brief")
     return run_ctx(args)
+
+
+def _db_path() -> Path:
+    env_db = os.getenv("CONTEXTFUN_DB")
+    if env_db:
+        return Path(os.path.expanduser(env_db)).resolve()
+    return (ROOT / ".contextfun" / "context.db").resolve()
+
+
+def lookup_workstream(name: str) -> Optional[Dict[str, object]]:
+    db = _db_path()
+    if not db.exists():
+        return None
+    conn = sqlite3.connect(str(db))
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT id, slug, title FROM workstream WHERE slug = ? OR title = ? ORDER BY id DESC LIMIT 1",
+            (name, name),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    return {"id": int(row["id"]), "slug": row["slug"], "title": row["title"]}
 
 
 # -------- Transcript ingestion helpers --------
@@ -306,6 +332,10 @@ def main():
     p_resume2.add_argument("--auto-pull", action="store_true", help="Import the newest transcript between Codex and Claude before emitting pack (default on; see CTX_AUTOPULL_DEFAULT)")
     p_resume2.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
 
+    p_delete = sub.add_parser("delete", help="Delete a session by id, or delete the latest session in a workstream")
+    p_delete.add_argument("name", nargs="?", help="Workstream slug or title; deletes the latest session in that workstream")
+    p_delete.add_argument("--session-id", type=int, help="Delete this specific session id")
+
     # Hidden expert command: pull transcripts explicitly
     p_pull = sub.add_parser("pull", help="Pull transcript(s) from Codex/Claude and ingest into the latest session")
     p_pull.add_argument("--codex", action="store_true")
@@ -433,6 +463,20 @@ def main():
             if args.pull_claude:
                 ingest_latest_from_claude(source_label="claude")
         sys.stdout.write(pack(ws["slug"], focus=args.focus, fmt=args.format, brief=args.brief))
+    elif args.cmd == "delete":
+        if args.session_id is not None:
+            sys.stdout.write(run_ctx(["session-delete", str(args.session_id)]))
+        else:
+            target = args.name or os.getenv("CTX_AGENT_WORKSTREAM")
+            if not target:
+                print("Provide a workstream name/slug or --session-id", file=sys.stderr)
+                return 2
+            ws = lookup_workstream(target)
+            if not ws:
+                print(f"Workstream '{target}' not found", file=sys.stderr)
+                return 1
+            sid = run_ctx(["session-latest", "--workstream-slug", str(ws["slug"])]).strip()
+            sys.stdout.write(run_ctx(["session-delete", sid]))
     elif args.cmd == "note":
         if args.text is None and sys.stdin.isatty():
             print("Provide text or pipe stdin", file=sys.stderr)

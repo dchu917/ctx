@@ -115,17 +115,19 @@ Agent Commands
 Claude Code:
 
 - Restart Claude Code after running quickstart.
-- Use `/ctx list`
+- Use `/ctx list` to see workstreams with one-line goal/latest-task summaries
 - Use `/ctx start my-workstream --pull`
 - Use `/ctx resume my-workstream`
+- Use `/ctx delete my-workstream`
 
 Codex:
 
 - Restart Codex after running quickstart.
-- Use `ctx-list`
+- Use `ctx-list` to see workstreams with one-line goal/latest-task summaries
 - Use `ctx-start my-workstream`
 - Use `ctx-start --pull my-workstream`
 - Use `ctx-resume my-workstream`
+- Use `ctx-delete my-workstream`
 
 Codex note:
 
@@ -149,6 +151,25 @@ The Python helpers under `scripts/skills/` are for clipboard and automation work
 
 - `python3 scripts/skills/ctx_resume_skill.py --name "my-workstream" --paste`
 - `python3 scripts/skills/ctx_start_skill.py --name "my-workstream" --agent codex --pull --paste`
+
+Delete Sessions
+---------------
+
+- Core CLI:
+  - `python3 scripts/ctx_cmd.py delete my-workstream`
+  - `python3 scripts/ctx_cmd.py delete --session-id 123`
+- Claude Code:
+  - `/ctx delete my-workstream`
+  - `/ctx delete --session-id 123`
+- Codex:
+  - `ctx-delete my-workstream`
+  - `ctx-delete --session-id 123`
+
+Notes:
+
+- Deleting by workstream deletes the latest session in that workstream.
+- Deleting by `--session-id` deletes exactly that session.
+- This is destructive.
 
 Install skills into Codex/Claude
 --------------------------------
@@ -241,6 +262,7 @@ Command Reference
 
 - Sessions & entries
   - `session-new <title> [--agent --tags --workspace --summary --workstream-slug|--workstream-id]`
+  - `session-delete <id>`
   - `session-list [--agent --tag --query --workstream-slug]`
   - `session-show <id>`
   - `add <session_id> [--type note|cmd|file|link|decision|todo --text -|<txt> --from-file <path> --snapshot <path>]`
