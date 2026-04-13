@@ -13,6 +13,7 @@ Supported chat-style commands in this repo:
   - Run `ctx list`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py list`.
   - Return stdout directly.
+  - If the user typed the plain `ctx list` form, do not describe it as `ctx-list` or say you are using the alias skill. Prefer the exact command the user typed.
 
 - `ctx search <query>`
   - Run `ctx search <query>`.
@@ -58,6 +59,7 @@ Supported chat-style commands in this repo:
 - Compatibility aliases:
   - `ctx-list`, `ctx-search`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`
   - These should behave the same as the `ctx <subcommand>` forms above.
+  - Treat these as compatibility aliases only. Prefer the plain `ctx <subcommand>` wording whenever the user typed that form.
 
 Behavior notes:
 

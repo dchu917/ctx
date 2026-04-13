@@ -1,10 +1,11 @@
 ---
 name: ctx-list
-description: List available ContextFun workstreams
+description: Compatibility alias for listing available ContextFun workstreams
 ---
 
 Usage
-- `ctx-list` — prints workstreams with a one-line goal/latest-task summary
+- Prefer `ctx list`
+- `ctx-list` is a compatibility alias that prints workstreams with a one-line summary
 
 What it runs
 - `bash ./scripts/skills/ctx_cli_skill.sh`

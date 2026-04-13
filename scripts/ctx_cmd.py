@@ -150,6 +150,7 @@ def _looks_like_ctx_noise(text: Optional[str]) -> bool:
         "launching skill:",
         "args from unknown skill:",
         "unknown skill:",
+        "claude code v",
         "<local-command-caveat>",
         "<command-message>",
         "<command-name>",
@@ -170,6 +171,12 @@ def _looks_like_ctx_noise(text: Optional[str]) -> bool:
         "[rerun:",
     )
     if any(marker in value for marker in noise_markers):
+        return True
+    if value in {"no files found", "claude transcript line", "codex transcript line"}:
+        return True
+    if value.startswith("[image source:"):
+        return True
+    if "exceeds maximum allowed tokens" in value:
         return True
     if any(cmd in value for cmd in ("ctx start ", "ctx resume ", "ctx list", "ctx search ", "ctx delete ", "ctx branch ")):
         if len(value) < 220:

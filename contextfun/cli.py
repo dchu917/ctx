@@ -852,6 +852,7 @@ def _looks_like_ctx_noise(text: str) -> bool:
         "launching skill:",
         "args from unknown skill:",
         "unknown skill:",
+        "claude code v",
         "conversation compacted",
         "no matches found",
         "<local-command-caveat>",
@@ -874,6 +875,12 @@ def _looks_like_ctx_noise(text: str) -> bool:
         "[rerun:",
     )
     if any(marker in collapsed for marker in noise_markers):
+        return True
+    if collapsed in {"no files found", "claude transcript line", "codex transcript line"}:
+        return True
+    if collapsed.startswith("[image source:"):
+        return True
+    if "exceeds maximum allowed tokens" in collapsed:
         return True
     if any(cmd in collapsed for cmd in ("ctx start ", "ctx resume ", "ctx list", "ctx search ", "ctx delete ", "ctx branch ")):
         if len(collapsed) < 220:
@@ -1340,53 +1347,241 @@ def _pack_entry_groups(
     return pinned_entries, recent_entries, len(pinned_entries), excluded_count
 
 
-def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
-    goal = row["title"]
+def _workstream_explicit_summary(row: sqlite3.Row) -> str:
+    summary = ""
     if row["metadata"]:
         try:
             meta = json.loads(row["metadata"]) or {}
-            goal = meta.get("summary") or goal
+            summary = str(meta.get("summary") or "").strip()
         except Exception:
-            pass
-    if not goal and row["description"]:
-        goal = row["description"]
-    elif row["description"] and goal == row["title"]:
-        goal = row["description"]
-    goal = _preview_text(goal, limit=70) or row["title"]
+            summary = ""
+    if not summary and row["description"]:
+        summary = str(row["description"] or "").strip()
+    return summary
 
-    latest_session = conn.execute(
-        "SELECT title FROM session WHERE workstream_id = ? ORDER BY id DESC LIMIT 1",
-        (row["id"],),
+
+def _entry_summary_score(row: sqlite3.Row) -> int:
+    role = _entry_role(row)
+    entry_type = str(row["type"] or "").strip().lower()
+    content = str(row["content"] or "").strip()
+    length = len(" ".join(content.split()))
+    score = 0
+    if role == "user":
+        score += 35
+    elif role == "assistant":
+        score += 30
+    elif role in {"developer", "system"}:
+        score -= 100
+    elif role in {"tool", "tool_call"}:
+        score -= 30
+    elif not role:
+        score += 16
+
+    if entry_type in {"decision", "todo"}:
+        score += 22
+    elif entry_type == "note":
+        score += 8
+    elif entry_type in {"cmd", "file", "link"}:
+        score -= 8
+
+    if 40 <= length <= 260:
+        score += 18
+    elif 20 <= length < 40:
+        score += 8
+    elif length > 500:
+        score -= 12
+    elif length < 12:
+        score -= 20
+
+    lowered = content.lower()
+    bonus_markers = (
+        "help me",
+        "need to",
+        "goal",
+        "working on",
+        "debug",
+        "investigate",
+        "training",
+        "dataset",
+        "benchmark",
+        "frontend",
+        "auth",
+        "refactor",
+        "branch",
+    )
+    if any(marker in lowered for marker in bonus_markers):
+        score += 6
+    if lowered.startswith("file created successfully at:"):
+        score -= 50
+    if "chunk id:" in lowered or "process exited with code" in lowered:
+        score -= 30
+    if any(marker in lowered for marker in ("help me", "can you", "i want to", "i want it so", "need to", "look at this repo")):
+        score += 16
+    if any(marker in lowered for marker in ("i'm going to", "i’m going to", "here's how", "here’s how", "the goal is")):
+        score += 10
+    if "?" in content and role == "user" and length <= 220:
+        score += 4
+    return score
+
+
+def _is_good_summary_candidate(text: str) -> bool:
+    collapsed = " ".join((text or "").strip().split())
+    lowered = collapsed.lower()
+    if not collapsed or len(collapsed) < 16:
+        return False
+    if _looks_like_ctx_noise(collapsed):
+        return False
+    if collapsed.startswith("/") or collapsed.startswith("./") or collapsed.startswith("~/"):
+        return False
+    if lowered.startswith("file created successfully at:"):
+        return False
+    if lowered.startswith("the file ") and "updated successfully" in lowered:
+        return False
+    if lowered.startswith("command running in background"):
+        return False
+    if "output is being written to:" in lowered:
+        return False
+    if "exceeds maximum allowed tokens" in lowered:
+        return False
+    if "chunk id:" in lowered or "wall time:" in lowered:
+        return False
+    if lowered.startswith("branched from workstream ["):
+        return False
+    if any(marker in lowered for marker in ("usage - in chat:", "what it runs", "#!/usr/bin/env bash", "export default function", "import ", "node_modules/", "ctx-demo.mp4")):
+        return False
+    if any(marker in lowered for marker in ("ctrl+o", "ctrl + o", "ctrl+t", "ctrl + t", "updated successfully", "no files found")):
+        return False
+    if "/tasks/" in lowered and ".output" in lowered:
+        return False
+    if lowered.count("/") >= 4 and lowered.count(" ") < 10:
+        return False
+    if lowered.count("/") >= 5 and len(collapsed) < 220:
+        return False
+    if re.match(r"^\d+\s+[\"'`<{[]", collapsed):
+        return False
+    if re.match(r"^\d+\s+\w", collapsed):
+        code_markers = ("import ", "export ", "function ", "return ", "const ", "let ", "class ", "from ", "def ")
+        if any(marker in lowered for marker in code_markers):
+            return False
+    if sum(1 for ch in collapsed if ch in "{}[]<>|`") >= 6:
+        return False
+    first = collapsed[0]
+    if first.islower() and not lowered.startswith(
+        ("help ", "can ", "i ", "we ", "look ", "need ", "please ", "okay ", "ok ")
+    ):
+        return False
+    return True
+
+
+def _branch_source_summary(conn: sqlite3.Connection, workstream_id: int) -> str:
+    row = conn.execute(
+        """
+        SELECT e.content
+        FROM entry e
+        JOIN session s ON s.id = e.session_id
+        WHERE s.workstream_id = ?
+        ORDER BY e.id ASC
+        LIMIT 1
+        """,
+        (workstream_id,),
     ).fetchone()
-    latest_entries = conn.execute(
-        "SELECT e.content, e.extras FROM entry e "
-        "JOIN session s ON s.id = e.session_id "
-        "WHERE s.workstream_id = ? ORDER BY e.id DESC LIMIT 20",
-        (row["id"],),
-    ).fetchall()
+    if not row:
+        return ""
+    content = str(row["content"] or "")
+    match = re.search(r"Branched from workstream \[([^\]]+)\]", content)
+    if not match:
+        return ""
+    source_slug = match.group(1).strip()
+    source_row = conn.execute("SELECT * FROM workstream WHERE slug = ? LIMIT 1", (source_slug,)).fetchone()
+    if not source_row:
+        return f"Branch of {source_slug}"
+    source_summary = _workstream_explicit_summary(source_row)
+    if not source_summary:
+        source_summary = _infer_workstream_summary(conn, int(source_row["id"]), str(source_row["title"]))
+    source_summary = source_summary.removeprefix("summary: ").strip()
+    if not source_summary:
+        return f"Branch of {source_slug}"
+    return f"Branch of {source_slug}: {source_summary}"
 
-    latest_task = ""
-    if latest_session and latest_session["title"] not in {"New session", "Auto-ingest session"}:
-        latest_task = latest_session["title"]
-    for latest_entry in latest_entries:
-        if _entry_is_excluded_from_load(latest_entry):
+
+def _clean_summary_text(text: str) -> str:
+    collapsed = " ".join((text or "").strip().split())
+    cleaned = re.sub(r"^look at this repo:\s*", "", collapsed, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^okay if possible,\s*then\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^okay cool,\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"^okay,\s*", "", cleaned, flags=re.IGNORECASE)
+    return cleaned or collapsed
+
+
+def _summary_candidates(rows: list[sqlite3.Row]) -> list[tuple[int, int, str, str]]:
+    candidates: list[tuple[int, int, str, str]] = []
+    for index, row in enumerate(rows):
+        if _entry_is_excluded_from_load(row):
             continue
-        if latest_entry["content"] and not _looks_like_ctx_noise(latest_entry["content"]):
-            latest_task = _preview_text(latest_entry["content"], limit=90) or latest_task
-            break
-    if not latest_task:
-        for latest_entry in latest_entries:
-            if _entry_is_excluded_from_load(latest_entry):
-                continue
-            if latest_entry["content"]:
-                latest_task = _preview_text(latest_entry["content"], limit=90) or latest_task
-                break
-    if not latest_task and latest_session:
-        latest_task = latest_session["title"]
-    if not latest_task:
-        latest_task = "No sessions yet"
+        if _looks_like_ctx_noise(row["content"]):
+            continue
+        score = _entry_summary_score(row)
+        if score < 10:
+            continue
+        content = str(row["content"] or "")
+        if not _is_good_summary_candidate(content):
+            continue
+        score += max(0, 18 - min(18, index // 2))
+        candidates.append((score, int(row["id"]), _clean_summary_text(content), _entry_role(row)))
+    return candidates
 
-    return f"goal: {goal} | latest: {_preview_text(latest_task, limit=90)}"
+
+def _infer_workstream_summary(conn: sqlite3.Connection, workstream_id: int, title: str) -> str:
+    branch_summary = _branch_source_summary(conn, workstream_id)
+    if branch_summary:
+        return _preview_text(branch_summary, limit=110)
+
+    session_rows = conn.execute(
+        "SELECT id FROM session WHERE workstream_id = ? ORDER BY id ASC LIMIT 3",
+        (workstream_id,),
+    ).fetchall()
+    for session_row in session_rows:
+        rows = conn.execute(
+            """
+            SELECT e.id, e.type, e.content, e.extras
+            FROM entry e
+            WHERE e.session_id = ?
+            ORDER BY e.id ASC
+            LIMIT 320
+            """,
+            (int(session_row["id"]),),
+        ).fetchall()
+        candidates = _summary_candidates(rows)
+        if not candidates:
+            continue
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        return _preview_text(candidates[0][2], limit=110)
+
+    recent_rows = conn.execute(
+        """
+        SELECT e.id, e.type, e.content, e.extras
+        FROM entry e
+        JOIN session s ON s.id = e.session_id
+        WHERE s.workstream_id = ?
+        ORDER BY e.id DESC
+        LIMIT 160
+        """,
+        (workstream_id,),
+    ).fetchall()
+    candidates = _summary_candidates(list(reversed(recent_rows)))
+    if not candidates:
+        return _preview_text(title, limit=110)
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    return _preview_text(candidates[0][2], limit=110)
+
+
+def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
+    explicit = _workstream_explicit_summary(row)
+    if explicit:
+        summary = _preview_text(explicit, limit=110) or row["title"]
+    else:
+        summary = _infer_workstream_summary(conn, int(row["id"]), str(row["title"]))
+    return f"summary: {summary}"
 
 
 def _print_workstreams(rows: list[sqlite3.Row], conn: sqlite3.Connection):
