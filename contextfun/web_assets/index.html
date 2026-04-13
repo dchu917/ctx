@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ctx</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Local Context Frontend</p>
+          <h1>ctx</h1>
+          <p class="lede">
+            Browse workstreams, search saved context, branch safely, and inspect the full loaded pack without dropping back
+            to the terminal.
+          </p>
+        </div>
+        <div class="hero-card">
+          <p class="hero-card-label">Start Here</p>
+          <pre class="hero-code">./setup.sh
+ctx web --open</pre>
+          <p class="hero-note">The browser UI stays local. By default it only binds to <code>127.0.0.1</code>.</p>
+        </div>
+      </header>
+
+      <main class="layout">
+        <aside class="rail">
+          <section class="panel current-panel">
+            <div class="panel-head">
+              <h2>Current</h2>
+              <span id="db-path" class="muted"></span>
+            </div>
+            <div id="current-workstream" class="empty-state">No current workstream set.</div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Search</h2>
+            </div>
+            <form id="search-form" class="stack">
+              <input id="search-query" name="q" type="text" placeholder="dataset download modal" />
+              <button type="submit" class="button button-primary">Search</button>
+            </form>
+            <div id="search-results" class="search-results"></div>
+          </section>
+
+          <section class="panel grow">
+            <div class="panel-head">
+              <h2>Workstreams</h2>
+              <button id="refresh-workstreams" type="button" class="button button-ghost">Refresh</button>
+            </div>
+            <div id="workstream-list" class="workstream-list"></div>
+          </section>
+        </aside>
+
+        <section class="main-column">
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Start Or Resume</h2>
+              <span class="muted">Use pasted context here instead of <code>--pull</code> when you are in the browser.</span>
+            </div>
+            <form id="start-form" class="stack">
+              <div class="form-grid">
+                <label>
+                  <span>Workstream</span>
+                  <input id="start-name" name="name" type="text" placeholder="feature-audit" />
+                </label>
+                <label>
+                  <span>Agent</span>
+                  <select id="start-agent" name="agent">
+                    <option value="other">other</option>
+                    <option value="claude">claude</option>
+                    <option value="codex">codex</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Preferred Source</span>
+                  <select id="start-source" name="source">
+                    <option value="">auto</option>
+                    <option value="claude">claude</option>
+                    <option value="codex">codex</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                <span>Optional seeded context</span>
+                <textarea
+                  id="start-pasted-text"
+                  name="pasted_text"
+                  rows="5"
+                  placeholder="Paste the chat excerpt, task brief, or notes you want saved into the new ctx session."
+                ></textarea>
+              </label>
+              <div class="button-row">
+                <button type="submit" class="button button-primary">Start Session</button>
+                <button id="resume-selected" type="button" class="button button-secondary">Resume Selected</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Selected Workstream</h2>
+              <span id="selected-hint" class="muted">Choose a workstream from the left.</span>
+            </div>
+            <div id="workstream-detail" class="empty-state">No workstream selected yet.</div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Latest Load</h2>
+              <span class="muted">This is the browser equivalent of expanding the full ctx block in chat.</span>
+            </div>
+            <div id="action-result" class="empty-state">Start or resume a workstream to inspect the full loaded pack here.</div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

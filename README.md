@@ -2,7 +2,7 @@
 
 Local context manager for Claude Code and Codex.
 
-Keep exact conversation bindings, resume work cleanly, and branch context without mixing streams.
+Keep exact conversation bindings, resume work cleanly, branch context without mixing streams, and inspect everything from a local browser frontend.
 
 ```text
 Claude Code chat          Codex chat
@@ -28,7 +28,7 @@ Claude Code chat          Codex chat
 - Indexed retrieval: saved workstreams, sessions, and entries are indexed for fast `ctx search` lookup.
 - Local-first: no API keys, no hosted service, plain SQLite plus local files.
 
-## 3-Step Demo
+## 4-Step Demo
 
 1. Clone and set it up:
 
@@ -38,7 +38,13 @@ cd ctx
 ./setup.sh
 ```
 
-2. Start a workstream:
+2. Open the browser frontend:
+
+```bash
+ctx web --open
+```
+
+3. Start a workstream:
 
 Claude Code:
 
@@ -46,13 +52,20 @@ Claude Code:
 /ctx start feature-audit --pull
 ```
 
-Codex:
+Codex or your terminal:
 
 ```bash
 ctx start feature-audit --pull
 ```
 
-3. Come back later and resume or branch:
+From the browser UI, you can also:
+
+- browse the current workstream
+- search indexed context
+- resume or branch without leaving the page
+- inspect the full loaded ctx block in an expandable panel
+
+4. Come back later and resume or branch:
 
 Claude Code:
 
@@ -80,10 +93,37 @@ That does the local setup:
 
 - creates `./.contextfun/context.db`
 - writes `./ctx.env`
-- installs `ctx`, `ctx-list`, `ctx-start`, `ctx-resume`, `ctx-delete`, and `ctx-branch` into `~/.contextfun/bin`
+- installs `ctx`, `ctx-list`, `ctx-search`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`, and `ctx-web` into `~/.contextfun/bin`
 - links local skills into `~/.claude/skills` and `~/.codex/skills`
 
 Then restart your client.
+
+## Browser Frontend
+
+Start the local browser UI:
+
+```bash
+ctx web --open
+```
+
+Or, if you want an explicit alias:
+
+```bash
+ctx-web --open
+```
+
+What the frontend gives you:
+
+- current workstream status at a glance
+- searchable list of workstreams with goal and latest-task summaries
+- structured workstream detail with sessions, transcript bindings, and recent entries
+- start, resume, branch, delete, and set-current actions from the page
+- an expandable full ctx load panel so you can inspect exactly what was loaded
+
+Frontend note:
+
+- In the browser, prefer pasting seed context into the form instead of relying on `--pull`
+- `--pull` captures the current frontmost macOS app, which is usually not what you want if the browser itself is frontmost
 
 ## Daily Use
 
@@ -103,6 +143,7 @@ Codex:
 - `ctx`
 - `ctx list`
 - `ctx search dataset download`
+- `ctx web --open`
 - `ctx start my-stream`
 - `ctx start my-stream --pull`
 - `ctx resume my-stream`
@@ -113,7 +154,7 @@ Codex note:
 
 - Codex does not currently support repo-defined custom slash commands like `/ctx list`.
 - In Codex, use the installed `ctx` command with subcommands.
-- Compatibility aliases like `ctx-list`, `ctx-start`, `ctx-resume`, `ctx-delete`, and `ctx-branch` still exist, but they are no longer the primary interface.
+- Compatibility aliases like `ctx-list`, `ctx-search`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`, and `ctx-web` still exist, but they are no longer the primary interface.
 - When `ctx start`, `ctx resume`, or `ctx branch` load context, they now print:
   - a short summary of what the workstream is
   - the latest session being targeted
@@ -194,6 +235,12 @@ export CTX_LOAD_CHAR_BUDGET=12000
 3. ingest that clipboard text into the new ctx session
 
 It does not change the stable Claude/Codex transcript binding by itself.
+
+If you are using the browser frontend, the recommended equivalent is:
+
+1. click Start Session
+2. paste the visible chat or task brief into the seeded-context textarea
+3. let `ctx` save that text into the new session directly
 
 ## Branching
 

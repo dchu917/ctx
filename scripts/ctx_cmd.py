@@ -41,6 +41,20 @@ def run_ctx(args_list, input_data=None):
         sys.exit(e.returncode)
 
 
+def run_ctx_passthrough(args_list):
+    cmd = ["python3", "-m", "contextfun"]
+    db = os.getenv("CONTEXTFUN_DB")
+    if db:
+        cmd += ["--db", db]
+    cmd += args_list
+    env = os.environ.copy()
+    if LIB.exists():
+        env["PYTHONPATH"] = (
+            (str(LIB) + os.pathsep + env.get("PYTHONPATH", "")) if env.get("PYTHONPATH") else str(LIB)
+        )
+    return subprocess.call(cmd, cwd=str(ROOT), env=env)
+
+
 def ensure_workstream(name, set_current=False):
     args = ["workstream-ensure", name]
     if set_current:
@@ -1274,6 +1288,11 @@ def main():
     p_pull.add_argument("--auto", action="store_true")
     p_pull.add_argument("--source", help="Preferred source for --auto (claude or codex)")
 
+    p_web = sub.add_parser("web", help="Serve the local ctx browser frontend")
+    p_web.add_argument("--host", default="127.0.0.1")
+    p_web.add_argument("--port", type=int, default=4310)
+    p_web.add_argument("--open", action="store_true")
+
     # Optional: set current workstream easily
     p_set = sub.add_parser("set", help="Set current workstream by slug or name (ensures if missing)")
     p_set.add_argument("name")
@@ -1367,6 +1386,11 @@ def main():
                 ingest_latest_from_codex(ws, sid)
             if args.claude:
                 ingest_latest_from_claude(ws, sid)
+    elif args.cmd == "web":
+        web_args = ["web", "--host", args.host, "--port", str(args.port)]
+        if args.open:
+            web_args.append("--open")
+        return run_ctx_passthrough(web_args)
     elif args.cmd == "start":
         # Ensure workstream and create a fresh session
         ws = ensure_workstream(args.name, set_current=True)

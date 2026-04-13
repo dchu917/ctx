@@ -74,17 +74,27 @@ ROOT_DIR="__ROOT_DIR__"
 exec python3 "$ROOT_DIR/scripts/ctx_cmd.py" branch "$@" --format markdown
 SH
 
-for shim in "$BIN_DIR/ctx" "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-search" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete" "$BIN_DIR/ctx-branch"; do
+cat > "$BIN_DIR/ctx-web" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if command -v ctx >/dev/null 2>&1; then
+  exec ctx web "$@"
+fi
+ROOT_DIR="__ROOT_DIR__"
+exec python3 "$ROOT_DIR/scripts/ctx_cmd.py" web "$@"
+SH
+
+for shim in "$BIN_DIR/ctx" "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-search" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete" "$BIN_DIR/ctx-branch" "$BIN_DIR/ctx-web"; do
   perl -0pi -e 's|__ROOT_DIR__|'"$ROOT_DIR"'|g' "$shim"
 done
 
-chmod +x "$BIN_DIR/ctx" "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-search" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete" "$BIN_DIR/ctx-branch"
+chmod +x "$BIN_DIR/ctx" "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-search" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete" "$BIN_DIR/ctx-branch" "$BIN_DIR/ctx-web"
 
 case ":${PATH}:" in
   *":${BIN_DIR}:"*) :;;
   *) echo "export PATH=\"$BIN_DIR:\$PATH\"" >> "$HOME/.zshrc";;
 esac
 
-echo "Installed repo-backed shims to $BIN_DIR: ctx, ctx-list, ctx-search, ctx-resume, ctx-start, ctx-delete, ctx-branch"
+echo "Installed repo-backed shims to $BIN_DIR: ctx, ctx-list, ctx-search, ctx-resume, ctx-start, ctx-delete, ctx-branch, ctx-web"
 echo "These call the cloned repo at $ROOT_DIR when a global 'ctx' is not installed."
 echo "If not already present, PATH was updated in ~/.zshrc. Open a new shell to pick up changes."

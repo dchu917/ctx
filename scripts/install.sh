@@ -56,7 +56,11 @@ cat > "$BIN_DIR/ctx-branch" <<EOF_SH
 #!/usr/bin/env bash
 exec "$BIN_DIR/ctx" branch "$@"
 EOF_SH
-chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-search" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete" "$BIN_DIR/ctx-branch"
+cat > "$BIN_DIR/ctx-web" <<EOF_SH
+#!/usr/bin/env bash
+exec "$BIN_DIR/ctx" web "$@"
+EOF_SH
+chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-search" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start" "$BIN_DIR/ctx-delete" "$BIN_DIR/ctx-branch" "$BIN_DIR/ctx-web"
 
 SHELL_RC=""
 if [[ -n "${ZSH_VERSION:-}" ]]; then SHELL_RC="$HOME/.zshrc"; fi
@@ -87,6 +91,7 @@ Try:
   ctx resume my-workstream
   ctx delete my-workstream
   ctx branch from-workstream to-workstream
+  ctx web --open
   # Compatibility aliases also work:
   ctx-list
   ctx-search my-query
@@ -94,6 +99,7 @@ Try:
   ctx-resume my-workstream
   ctx-delete my-workstream
   ctx-branch from-workstream to-workstream
+  ctx-web --open
   python3 -m contextfun --help
 
 For Claude/Codex terminals, use the agent bootstrap one-liner from README.

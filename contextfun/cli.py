@@ -1995,6 +1995,21 @@ def build_parser() -> argparse.ArgumentParser:
             print(preamble + pack_text)
     p_resume.set_defaults(func=_cmd_resume)
 
+    # web frontend
+    p_web = sp.add_parser("web", help="Serve the local ctx browser frontend")
+    add_common_args(p_web)
+    p_web.add_argument("--host", default="127.0.0.1", help="Host to bind")
+    p_web.add_argument("--port", type=int, default=4310, help="Port to bind")
+    p_web.add_argument("--open", action="store_true", help="Open the browser after starting")
+    def _cmd_web(args: argparse.Namespace):
+        from .web import run_server
+
+        db = Path(args.db)
+        ensure_home(db.parent)
+        os.environ["CONTEXTFUN_DB"] = str(db.resolve())
+        run_server(db, host=args.host, port=args.port, open_browser_flag=args.open)
+    p_web.set_defaults(func=_cmd_web)
+
     return p
 
 
