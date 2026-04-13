@@ -18,14 +18,16 @@ Supported chat-style commands in this repo:
   - Treat `--pull` strictly as a flag, never as part of the workstream name.
   - Run `ctx start [--pull] <workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py start [--pull] <workstream> --format markdown`.
-  - Return the emitted markdown pack directly.
-  - Make it explicit that `ctrl-o` expands the loaded ctx block.
+  - Do not paste the full ctx pack back unless the user asks for it.
+  - Summarize the loaded workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.
+  - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
 
 - `ctx resume <workstream>`
   - Run `ctx resume <workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py resume <workstream> --format markdown`.
-  - Return the emitted markdown pack directly.
-  - Make it explicit that `ctrl-o` expands the loaded ctx block.
+  - Do not paste the full ctx pack back unless the user asks for it.
+  - Summarize the loaded workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.
+  - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
 
 - `ctx delete <workstream>` or `ctx delete --session-id <id>`
   - Run `ctx delete ...`.
@@ -36,7 +38,9 @@ Supported chat-style commands in this repo:
   - Run `ctx branch <source-workstream> <target-workstream>`.
   - If that is unavailable, run `python3 scripts/ctx_cmd.py branch <source-workstream> <target-workstream> --format markdown`.
   - This creates a new workstream seeded from the source workstream snapshot, but future transcript pulls stay independent.
-  - Make it explicit that `ctrl-o` expands the loaded ctx block.
+  - Do not paste the full ctx pack back unless the user asks for it.
+  - Summarize the new branch briefly, mention the latest inherited context, and ask how the user wants to proceed.
+  - Make it explicit that in Codex the user can inspect the full command output with `ctrl-t`, and in Claude they can expand the tool output block.
 
 - Compatibility aliases:
   - `ctx-list`, `ctx-start`, `ctx-resume`, `ctx-delete`, `ctx-branch`

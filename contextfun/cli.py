@@ -477,6 +477,30 @@ def _preview_text(text, limit: int = 100) -> str:
     return collapsed
 
 
+def _looks_like_ctx_noise(text: str) -> bool:
+    collapsed = " ".join((text or "").strip().split()).lower()
+    if not collapsed:
+        return True
+    noise_markers = (
+        "base directory for this skill:",
+        "launching skill:",
+        "args from unknown skill:",
+        "unknown skill:",
+        "<local-command-caveat>",
+        "<command-message>",
+        "<command-name>",
+        "<command-args>",
+        "tip: press tab to queue a message when a task is running",
+        "openai codex (v",
+        "[rerun:",
+    )
+    if any(marker in collapsed for marker in noise_markers):
+        return True
+    if collapsed.startswith("davidchu@") and "% codex" in collapsed:
+        return True
+    return False
+
+
 def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> str:
     goal = row["title"]
     if row["metadata"]:
@@ -495,18 +519,22 @@ def _workstream_one_line_summary(conn: sqlite3.Connection, row: sqlite3.Row) -> 
         "SELECT title FROM session WHERE workstream_id = ? ORDER BY id DESC LIMIT 1",
         (row["id"],),
     ).fetchone()
-    latest_entry = conn.execute(
+    latest_entries = conn.execute(
         "SELECT e.content FROM entry e "
         "JOIN session s ON s.id = e.session_id "
-        "WHERE s.workstream_id = ? ORDER BY e.id DESC LIMIT 1",
+        "WHERE s.workstream_id = ? ORDER BY e.id DESC LIMIT 20",
         (row["id"],),
-    ).fetchone()
+    ).fetchall()
 
     latest_task = ""
     if latest_session and latest_session["title"] not in {"New session", "Auto-ingest session"}:
         latest_task = latest_session["title"]
-    if latest_entry and latest_entry["content"]:
-        latest_task = _preview_text(latest_entry["content"], limit=90) or latest_task
+    for latest_entry in latest_entries:
+        if latest_entry["content"] and not _looks_like_ctx_noise(latest_entry["content"]):
+            latest_task = _preview_text(latest_entry["content"], limit=90) or latest_task
+            break
+    if not latest_task and latest_entries and latest_entries[0]["content"]:
+        latest_task = _preview_text(latest_entries[0]["content"], limit=90) or latest_task
     if not latest_task and latest_session:
         latest_task = latest_session["title"]
     if not latest_task:

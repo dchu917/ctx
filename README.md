@@ -115,7 +115,8 @@ Codex note:
   - a short summary of what the workstream is
   - the latest session being targeted
   - the most recent items
-  - an explicit hint that `ctrl-o` expands the loaded ctx block in Claude/Codex
+  - an explicit hint that in Codex you can inspect the full command output with `ctrl-t`, and in Claude you can expand the tool output block
+  - guidance for the agent to summarize briefly and ask how you want to proceed instead of pasting the full pack back
 
 ## How It Works
 
@@ -156,7 +157,12 @@ The summary makes it clear:
 - what the workstream goal is
 - what the last few items were
 
-The output also explicitly tells the user to use `ctrl-o` in Claude/Codex to expand the loaded ctx block.
+The output also explicitly tells the user:
+
+- Codex: use `ctrl-t` to inspect the full command output when the pack is collapsed
+- Claude: expand the tool output block to inspect the full pack
+
+It also includes a small instruction block telling the agent to summarize briefly and ask how you want to proceed, instead of echoing the full pack back into chat.
 
 If the pack would be too large for a typical model context window, `ctx` automatically switches to a compressed load mode. In that case it will say so in the summary with a `Pack mode` line.
 

@@ -109,6 +109,30 @@ def _preview_text(text: Optional[str], limit: int = 140) -> str:
     return value[: limit - 3] + "..."
 
 
+def _looks_like_ctx_noise(text: Optional[str]) -> bool:
+    value = " ".join((text or "").strip().split()).lower()
+    if not value:
+        return True
+    noise_markers = (
+        "base directory for this skill:",
+        "launching skill:",
+        "args from unknown skill:",
+        "unknown skill:",
+        "<local-command-caveat>",
+        "<command-message>",
+        "<command-name>",
+        "<command-args>",
+        "tip: press tab to queue a message when a task is running",
+        "openai codex (v",
+        "[rerun:",
+    )
+    if any(marker in value for marker in noise_markers):
+        return True
+    if value.startswith("davidchu@") and "% codex" in value:
+        return True
+    return False
+
+
 def _load_char_budget() -> int:
     raw = os.getenv("CTX_LOAD_CHAR_BUDGET", "12000")
     try:
@@ -252,7 +276,7 @@ def _recent_entry_rows(workstream_id: int, limit: int = 4) -> List[sqlite3.Row]:
     if not db.exists():
         return []
     with _connect_db() as conn:
-        return conn.execute(
+        rows = conn.execute(
             """
             SELECT e.*, s.title AS session_title
             FROM entry e
@@ -261,8 +285,10 @@ def _recent_entry_rows(workstream_id: int, limit: int = 4) -> List[sqlite3.Row]:
             ORDER BY e.id DESC
             LIMIT ?
             """,
-            (workstream_id, limit),
+            (workstream_id, max(limit * 5, 20)),
         ).fetchall()
+    meaningful = [row for row in rows if not _looks_like_ctx_noise(row["content"])]
+    return meaningful[:limit] if meaningful else rows[:limit]
 
 
 def _workstream_goal_text(workstream_row: sqlite3.Row) -> str:
@@ -368,14 +394,25 @@ def _render_loaded_output(
             f"- Goal: {goal}",
             f"- Linked transcripts: {links}",
             f"- Pack mode: {pack_mode}",
-            "- Tip: In Claude/Codex, use `ctrl-o` to expand the loaded ctx block below.",
+            "- Tip: In Codex, use `ctrl-t` to inspect the full command output. In Claude, expand the tool output block in the UI.",
             "",
             "### Last things",
             *recent_lines,
             "",
+            "### How To Use This Load",
+            "",
+            "- In Codex, press `ctrl-t` to inspect the full command output if the full pack is collapsed.",
+            "- In Claude, expand the tool output block to inspect the full pack.",
+            "- Assistant: summarize this workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.",
+            "- Assistant: do not paste the full ctx pack back unless the user explicitly asks for it.",
+            "",
             "---",
             "",
+            "<ctx-pack>",
+            "",
             pack_text,
+            "",
+            "</ctx-pack>",
         ]
         return "\n".join(lines)
 
@@ -386,12 +423,20 @@ def _render_loaded_output(
         f"Goal: {goal}",
         f"Linked transcripts: {links}",
         f"Pack mode: {pack_mode}",
-        "Tip: In Claude/Codex, use ctrl-o to expand the loaded ctx block below.",
+        "Tip: In Codex, use ctrl-t to inspect the full command output. In Claude, expand the tool output block in the UI.",
         "",
         "Last things:",
         *recent_lines,
         "",
+        "How to use this load:",
+        "- In Codex, press ctrl-t to inspect the full command output if the full pack is collapsed.",
+        "- In Claude, expand the tool output block to inspect the full pack.",
+        "- Assistant: summarize this workstream briefly, mention the latest relevant activity, and ask how the user wants to proceed.",
+        "- Assistant: do not paste the full ctx pack back unless the user explicitly asks for it.",
+        "",
+        "<ctx-pack>",
         pack_text,
+        "</ctx-pack>",
     ]
     return "\n".join(lines)
 
