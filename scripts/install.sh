@@ -31,6 +31,21 @@ echo "Copying files ..."
 rsync -a "$SRC_DIR/contextfun/" "$LIB_DIR/contextfun/"
 install -m 0755 "$SRC_DIR/scripts/ctx_cmd.py" "$BIN_DIR/ctx"
 
+# Also install convenience shims so Codex/Claude can call dashed commands directly
+cat > "$BIN_DIR/ctx-list" <<EOF_SH
+#!/usr/bin/env bash
+exec "$BIN_DIR/ctx" list
+EOF_SH
+cat > "$BIN_DIR/ctx-resume" <<EOF_SH
+#!/usr/bin/env bash
+exec "$BIN_DIR/ctx" go "$@"
+EOF_SH
+cat > "$BIN_DIR/ctx-start" <<EOF_SH
+#!/usr/bin/env bash
+exec "$BIN_DIR/ctx" start "$@"
+EOF_SH
+chmod +x "$BIN_DIR/ctx-list" "$BIN_DIR/ctx-resume" "$BIN_DIR/ctx-start"
+
 SHELL_RC=""
 if [[ -n "${ZSH_VERSION:-}" ]]; then SHELL_RC="$HOME/.zshrc"; fi
 if [[ -n "${BASH_VERSION:-}" ]]; then SHELL_RC="$HOME/.bashrc"; fi
@@ -52,9 +67,8 @@ Open a new shell or run:
   export PATH="$BIN_DIR:">$PATH
 
 Try:
-  ctx list
+  ctx list   # or: ctx-list
   python3 -m contextfun --help
 
 For Claude/Codex terminals, use the agent bootstrap one-liner from README.
 EOF
-
