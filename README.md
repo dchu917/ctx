@@ -383,7 +383,30 @@ If you want a global install without cloning first, there is also a curl install
 curl -fsSL https://raw.githubusercontent.com/dchu917/ctx/main/scripts/install.sh | bash
 ```
 
+That installs a pinned tagged release into `~/.contextfun`, including self-contained Claude/Codex skills that no longer depend on a live repo checkout.
+
+Notes:
+
+- set `CTX_VERSION=<tag>` if you want a different tagged release
+- set `CTX_INSTALL_SKILLS=0` if you want to skip installing Claude/Codex skills
+
 Use that only if you specifically want a global `ctx` install in `~/.contextfun`.
+
+## Smoke Tests
+
+Before shipping changes, run:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+This covers the current release smoke path:
+
+- clean missing-workstream resumes
+- branch snapshot fidelity
+- pinned installer behavior
+- skill installation wiring
+- explicit `--pull` clipboard status reporting
 
 ## Agent Bootstrap
 

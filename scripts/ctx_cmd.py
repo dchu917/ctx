@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from contextfun.cli import (
+    ClosingConnection,
     _attach_dir,
     _current_workspace_path as _ctx_current_workspace_path,
     _effective_workspace_for_workstream,
@@ -250,15 +251,12 @@ def lookup_workstream(name: str) -> Optional[Dict[str, object]]:
     db = _db_path()
     if not db.exists():
         return None
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
-    try:
+    with sqlite3.connect(str(db), factory=ClosingConnection) as conn:
+        conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT id, slug, title FROM workstream WHERE slug = ? OR title = ? ORDER BY id DESC LIMIT 1",
             (name, name),
         ).fetchone()
-    finally:
-        conn.close()
     if not row:
         return None
     return {"id": int(row["id"]), "slug": row["slug"], "title": row["title"]}
@@ -298,9 +296,75 @@ def current_workstream() -> Optional[Dict[str, object]]:
 
 
 def _connect_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(_db_path()))
+    conn = sqlite3.connect(str(_db_path()), factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _capture_frontmost_copy() -> bool:
+    try:
+        subprocess.check_call(
+            ["osascript", "-e", 'tell application "System Events" to keystroke "a" using {command down}'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.check_call(
+            ["osascript", "-e", 'tell application "System Events" to keystroke "c" using {command down}'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _ingest_clipboard_into_session(
+    session_id: int,
+    *,
+    fmt: str,
+    source: Optional[str],
+    attempted_frontmost: bool,
+    frontmost_copied: bool,
+) -> str:
+    try:
+        clip = subprocess.check_output(["pbpaste"]).decode()
+    except Exception:
+        if attempted_frontmost and frontmost_copied:
+            return "Pull capture: frontmost copy ran, but the clipboard could not be read, so no visible chat was ingested."
+        if attempted_frontmost:
+            return "Pull capture: frontmost copy failed and the clipboard could not be read, so no visible chat was ingested."
+        return "Pull capture: clipboard could not be read, so no text was ingested."
+
+    if not clip.strip():
+        if attempted_frontmost and frontmost_copied:
+            return "Pull capture: frontmost copy ran, but the clipboard was empty, so no visible chat was ingested."
+        if attempted_frontmost:
+            return "Pull capture: frontmost copy failed and the clipboard was empty, so no visible chat was ingested."
+        return "Pull capture: clipboard was empty, so no text was ingested."
+
+    try:
+        run_ctx(
+            [
+                "ingest",
+                "--file", "-",
+                "--session-id", str(session_id),
+                "--format", ("markdown" if fmt == "markdown" else "auto"),
+                *( ["--source", source] if source else [] ),
+            ],
+            input_data=clip,
+        )
+    except SystemExit:
+        if attempted_frontmost and frontmost_copied:
+            return "Pull capture: frontmost chat was copied, but ingest failed, so that chat was not saved."
+        if attempted_frontmost:
+            return "Pull capture: frontmost copy failed; clipboard text was available, but ingest failed."
+        return "Pull capture: clipboard text was available, but ingest failed."
+
+    if attempted_frontmost and frontmost_copied:
+        return "Pull capture: frontmost chat was copied and ingested."
+    if attempted_frontmost:
+        return "Pull capture: frontmost copy failed; existing clipboard text was ingested instead."
+    return "Pull capture: existing clipboard text was ingested."
 
 
 def _copy_branch_attachment(extras: Dict[str, object], new_session_id: int, new_entry_id: int) -> Dict[str, object]:
@@ -987,6 +1051,7 @@ def _render_loaded_output(
     fmt: str,
     brief: bool,
     compress: bool,
+    capture_note: Optional[str] = None,
 ) -> str:
     ws_row = _workstream_row_by_slug(str(workstream["slug"]))
     session = _session_row(session_id) if session_id else None
@@ -1078,6 +1143,7 @@ def _render_loaded_output(
             f"- Linked transcripts: {links}",
             f"- Load controls: {pinned_count} pinned | {excluded_count} excluded",
             f"- Pack mode: {pack_mode}",
+            *( [f"- {capture_note}"] if capture_note else [] ),
             *continuation_lines_md,
             "- Tip: In Codex, use `ctrl-t` to inspect the full command output. In Claude, expand the tool output block in the UI.",
             "",
@@ -1112,6 +1178,7 @@ def _render_loaded_output(
         f"Linked transcripts: {links}",
         f"Load controls: {pinned_count} pinned | {excluded_count} excluded",
         f"Pack mode: {pack_mode}",
+        *( [capture_note] if capture_note else [] ),
         *continuation_lines_text,
         "Tip: In Codex, use ctrl-t to inspect the full command output. In Claude, expand the tool output block in the UI.",
         "",
@@ -1994,6 +2061,7 @@ def main():
         return run_ctx_passthrough(web_args)
     elif args.cmd == "start":
         compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
+        capture_note = None
         # Start a new workstream and create its first session. If the name
         # already exists, ctx creates a suffixed variant like "name (1)".
         ws = ensure_workstream(args.name, set_current=True, unique_if_exists=True)
@@ -2011,36 +2079,17 @@ def main():
             if args.pull_claude:
                 ingest_latest_from_claude(ws, sid)
         # Optional: capture clipboard (optionally copying from frontmost first)
+        frontmost_copied = False
         if args.copy_frontmost:
-            # Best-effort: requires Accessibility permissions
-            try:
-                subprocess.check_call(
-                    ["osascript", "-e", 'tell application "System Events" to keystroke "a" using {command down}'],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                subprocess.check_call(
-                    ["osascript", "-e", 'tell application "System Events" to keystroke "c" using {command down}'],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            except Exception:
-                # Non-fatal; proceed with whatever is already on the clipboard.
-                pass
+            frontmost_copied = _capture_frontmost_copy()
         if args.from_clipboard:
-            try:
-                clip = subprocess.check_output(["pbpaste"]).decode()
-                # Ingest clipboard into the freshly created session.
-                run_ctx([
-                    "ingest",
-                    "--file", "-",
-                    "--session-id", str(sid),
-                    "--format", ("markdown" if args.format == "markdown" else "auto"),
-                    *( ["--source", args.source] if args.source else [] ),
-                ], input_data=clip)
-            except Exception:
-                # Ignore clipboard failures silently to keep UX smooth
-                pass
+            capture_note = _ingest_clipboard_into_session(
+                sid,
+                fmt=args.format,
+                source=args.source,
+                attempted_frontmost=args.copy_frontmost,
+                frontmost_copied=frontmost_copied,
+            )
         action_label = "started new workstream and first session"
         if ws.get("renamed"):
             action_label = f"started new workstream with auto-renamed name (requested '{args.name}')"
@@ -2053,6 +2102,7 @@ def main():
                 fmt=args.format,
                 brief=args.brief,
                 compress=compress,
+                capture_note=capture_note,
             )
         )
     elif args.cmd == "resume":

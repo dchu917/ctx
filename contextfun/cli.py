@@ -32,6 +32,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 """
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 SCHEMA = [
     "PRAGMA foreign_keys = ON;",
     """
@@ -325,7 +333,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path), timeout=30)
+    conn = sqlite3.connect(str(db_path), timeout=30, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     return conn
 

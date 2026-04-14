@@ -31,7 +31,7 @@ fi
 echo "==> ContextFun Quickstart"
 
 if $GLOBAL; then
-  echo "[1/3] Installing global CLI to ~/.contextfun (ctx on PATH)"
+  echo "[1/3] Installing pinned global ctx release to ~/.contextfun (includes self-contained skills)"
   bash "$ROOT_DIR/scripts/install.sh"
   echo "[2/3] Verifying installation"
   if command -v ctx >/dev/null 2>&1; then
