@@ -88,13 +88,15 @@ ctx branch feature-audit feature-audit-v2
 
 ## Quick Start
 
-Recommended path if you already cloned the repo:
+After cloning the repo, run:
 
 ```bash
 ./setup.sh
 ```
 
-That does the local setup:
+This is the primary install path.
+
+It does the local setup:
 
 - creates `./.contextfun/context.db`
 - writes `./ctx.env`
@@ -366,16 +368,7 @@ Branching behavior:
 - the target starts detached and does not inherit the source's future transcript pulls
 - if the current Claude/Codex conversation is already owned by the source workstream, resuming the branch stays detached instead of reusing that transcript
 - future work in the target is independent
-
-## Less Intimidating Install Options
-
-If you already cloned the repo, use:
-
-```bash
-./setup.sh
-```
-
-That is the recommended setup.
+## Other Install Options
 
 If you want a global install without cloning first, there is also a curl installer:
 
