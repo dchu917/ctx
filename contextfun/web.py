@@ -101,8 +101,8 @@ def _split_ctx_output(text: str) -> dict:
 
 
 class CtxWebApp:
-    def __init__(self, db_path: Path):
-        self.db_path = db_path.resolve()
+    def __init__(self, db_path: Path | str):
+        self.db_path = Path(db_path).resolve()
         self.launch_cwd = Path.cwd().resolve()
         os.environ["CONTEXTFUN_DB"] = str(self.db_path)
         init_db(self.db_path, quiet=True)
@@ -220,8 +220,7 @@ class CtxWebApp:
                     }
                 )
         normalized_scope = str(scope or "all").strip().lower()
-        if normalized_scope in {"current", "other"}:
-            items = [item for item in items if _repo_scope_match(current_workspace, item["workspace"], normalized_scope)]
+        items = [item for item in items if _repo_scope_match(current_workspace, item["workspace"], normalized_scope)]
         items.sort(key=lambda item: (0 if item["repo_relation"] == "current" else 1, -item["id"]))
         return items
 
@@ -430,19 +429,18 @@ class CtxWebApp:
                         if rows:
                             search_mode = "loose-or"
             normalized_scope = str(scope or "all").strip().lower()
-            if normalized_scope in {"current", "other"}:
-                filtered_rows = []
-                workspace_cache: dict[int, str] = {}
-                for row in rows:
-                    wsid = int(row["workstream_id"]) if row["workstream_id"] else None
-                    if wsid is None:
-                        continue
-                    if wsid not in workspace_cache:
-                        ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wsid,)).fetchone()
-                        workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row) if ws_row else ""
-                    if _repo_scope_match(current_workspace, workspace_cache[wsid], normalized_scope):
-                        filtered_rows.append(row)
-                rows = filtered_rows
+            filtered_rows = []
+            workspace_cache: dict[int, str] = {}
+            for row in rows:
+                wsid = int(row["workstream_id"]) if row["workstream_id"] else None
+                if wsid is None:
+                    continue
+                if wsid not in workspace_cache:
+                    ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wsid,)).fetchone()
+                    workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row) if ws_row else ""
+                if _repo_scope_match(current_workspace, workspace_cache[wsid], normalized_scope):
+                    filtered_rows.append(row)
+            rows = filtered_rows
             if not rows:
                 like = f"%{query}%"
                 rows = conn.execute(
@@ -468,19 +466,18 @@ class CtxWebApp:
                     (like, like, like, like, max(limit * 4, 12)),
                 ).fetchall()
                 search_mode = "fallback-like"
-                if normalized_scope in {"current", "other"}:
-                    filtered_rows = []
-                    workspace_cache: dict[int, str] = {}
-                    for row in rows:
-                        wsid = int(row["workstream_id"]) if row["workstream_id"] else None
-                        if wsid is None:
-                            continue
-                        if wsid not in workspace_cache:
-                            ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wsid,)).fetchone()
-                            workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row) if ws_row else ""
-                        if _repo_scope_match(current_workspace, workspace_cache[wsid], normalized_scope):
-                            filtered_rows.append(row)
-                    rows = filtered_rows
+                filtered_rows = []
+                workspace_cache = {}
+                for row in rows:
+                    wsid = int(row["workstream_id"]) if row["workstream_id"] else None
+                    if wsid is None:
+                        continue
+                    if wsid not in workspace_cache:
+                        ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wsid,)).fetchone()
+                        workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row) if ws_row else ""
+                    if _repo_scope_match(current_workspace, workspace_cache[wsid], normalized_scope):
+                        filtered_rows.append(row)
+                rows = filtered_rows
             kind_priority = {"entry": 0, "session": 1, "workstream": 2}
             grouped: dict[str, dict] = {}
             for row in rows:

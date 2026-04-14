@@ -6,6 +6,7 @@ import os
 import shutil
 import sqlite3
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 import re
@@ -887,6 +888,18 @@ def _workspace_repo_name(workspace: str | None) -> str:
     return Path(normalized).name
 
 
+def _is_ephemeral_workspace(workspace: str | None) -> bool:
+    normalized = _normalize_workspace_path(workspace)
+    if not normalized:
+        return False
+    try:
+        target = Path(normalized).resolve()
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+        return target == tmp_root or tmp_root in target.parents
+    except Exception:
+        return normalized.startswith("/tmp/") or normalized.startswith("/private/var/folders/") or normalized.startswith("/var/folders/")
+
+
 def _extract_workspace_candidates(text: str) -> list[str]:
     value = str(text or "")
     candidates: list[str] = []
@@ -964,6 +977,8 @@ def _workspace_badge(current_workspace: str | None, target_workspace: str | None
 
 
 def _repo_scope_match(current_workspace: str | None, target_workspace: str | None, scope: str | None) -> bool:
+    if _is_ephemeral_workspace(target_workspace) and _workspace_relation(current_workspace, target_workspace) != "current":
+        return False
     normalized_scope = str(scope or "").strip().lower()
     if not normalized_scope or normalized_scope == "all":
         return True
@@ -1749,6 +1764,8 @@ def _print_workstreams(rows: list[sqlite3.Row], conn: sqlite3.Connection):
     decorated = []
     for r in rows:
         effective_workspace = _effective_workspace_for_workstream(conn, r)
+        if not _repo_scope_match(current_workspace, effective_workspace, "all"):
+            continue
         relation = _workspace_relation(current_workspace, effective_workspace)
         decorated.append((0 if relation == "current" else 1, -int(r["id"]), r, effective_workspace))
     decorated.sort(key=lambda item: (item[0], item[1]))
@@ -1777,8 +1794,12 @@ def cmd_workstream_list(args: argparse.Namespace):
     sql = " ".join(q)
     with connect(db) as conn:
         rows = conn.execute(sql, params).fetchall()
+        current_workspace = _current_workspace_path()
+        rows = [
+            r for r in rows
+            if _repo_scope_match(current_workspace, _effective_workspace_for_workstream(conn, r), "all")
+        ]
         if getattr(args, "this_repo", False):
-            current_workspace = _current_workspace_path()
             rows = [
                 r for r in rows
                 if _repo_scope_match(current_workspace, _effective_workspace_for_workstream(conn, r), "current")
@@ -2017,6 +2038,24 @@ def cmd_search(args: argparse.Namespace):
     init_db(db, quiet=True)
     with connect(db) as conn:
         current_workspace = _current_workspace_path()
+        workspace_cache: dict[int, str] = {}
+
+        def _workspace_for_wsid(wsid: int | None) -> str:
+            if wsid is None:
+                return ""
+            if wsid not in workspace_cache:
+                ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wsid,)).fetchone()
+                workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row) if ws_row else ""
+            return workspace_cache[wsid]
+
+        def _visible_rows(rows):
+            filtered = []
+            for row in rows:
+                wsid = int(row["workstream_id"]) if row["workstream_id"] else None
+                if _repo_scope_match(current_workspace, _workspace_for_wsid(wsid), "all"):
+                    filtered.append(row)
+            return filtered
+
         tokens = _fts_tokens(args.query)
         fts_q = _fts_query(tokens, "AND")
         if _table_exists(conn, "search_index") and fts_q:
@@ -2036,25 +2075,21 @@ def cmd_search(args: argparse.Namespace):
                     (match_q, max(args.limit * 4, 12)),
                 ).fetchall()
 
-            rows = _fts_rows(fts_q)
+            rows = _visible_rows(_fts_rows(fts_q))
             search_mode = "strict"
             if not rows and len(tokens) > 1:
                 loose_q = _fts_query(tokens, "OR")
                 if loose_q and loose_q != fts_q:
-                    rows = _fts_rows(loose_q)
+                    rows = _visible_rows(_fts_rows(loose_q))
                     if rows:
                         search_mode = "loose-or"
             if getattr(args, "this_repo", False):
                 filtered_rows = []
-                workspace_cache: dict[int, str] = {}
                 for row in rows:
                     wsid = int(row["workstream_id"]) if row["workstream_id"] else None
                     if wsid is None:
                         continue
-                    if wsid not in workspace_cache:
-                        ws_row = conn.execute("SELECT * FROM workstream WHERE id = ?", (wsid,)).fetchone()
-                        workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row) if ws_row else ""
-                    if _repo_scope_match(current_workspace, workspace_cache[wsid], "current"):
+                    if _repo_scope_match(current_workspace, _workspace_for_wsid(wsid), "current"):
                         filtered_rows.append(row)
                 rows = filtered_rows
             if not rows:
@@ -2125,18 +2160,15 @@ def cmd_search(args: argparse.Namespace):
             "ORDER BY e.id DESC LIMIT ?"
         )
         like = f"%{args.query}%"
-        rows = conn.execute(q, (like, like, args.limit)).fetchall()
+        rows = _visible_rows(conn.execute(q, (like, like, args.limit)).fetchall())
         if getattr(args, "this_repo", False):
             filtered_rows = []
-            workspace_cache: dict[int, str] = {}
             for row in rows:
                 ws_row = conn.execute("SELECT * FROM workstream WHERE id = (SELECT workstream_id FROM session WHERE id = ?)", (int(row["session_id"]),)).fetchone()
                 wsid = int(ws_row["id"]) if ws_row else None
                 if wsid is None:
                     continue
-                if wsid not in workspace_cache:
-                    workspace_cache[wsid] = _effective_workspace_for_workstream(conn, ws_row)
-                if _repo_scope_match(current_workspace, workspace_cache[wsid], "current"):
+                if _repo_scope_match(current_workspace, _workspace_for_wsid(wsid), "current"):
                     filtered_rows.append(row)
             rows = filtered_rows
     for r in rows:

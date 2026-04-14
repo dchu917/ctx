@@ -47,6 +47,15 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             text=True,
         )
 
+    def run_ctx_in(self, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(CTX_CMD), *args],
+            cwd=str(cwd),
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
     def test_resume_missing_is_clean(self):
         proc = self.run_ctx("resume", "missing-stream")
         self.assertEqual(proc.returncode, 0)
@@ -209,6 +218,41 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             entries = ctx_cmd._curation_entries(int(ws["id"]))
         self.assertTrue(entries)
         self.assertIn("Keep this memory available for curation.", entries[0]["content"])
+
+    def test_list_hides_ephemeral_temp_workspaces_by_default(self):
+        self.assertEqual(self.run_ctx("start", "root-demo", "--no-auto-pull").returncode, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_ctx_in(Path(tmp), "start", "temp-demo", "--no-auto-pull").returncode, 0)
+        listed = self.run_ctx("list")
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        self.assertIn("root-demo", listed.stdout)
+        self.assertNotIn("temp-demo", listed.stdout)
+
+    def test_web_hides_ephemeral_temp_workspaces_by_default(self):
+        self.assertEqual(self.run_ctx("start", "root-web-demo", "--no-auto-pull").returncode, 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.run_ctx_in(Path(tmp), "start", "temp-web-demo", "--no-auto-pull").returncode, 0)
+        env = os.environ.copy()
+        env["CONTEXTFUN_DB"] = str(self.db_path)
+        env["PYTHONPATH"] = str(ROOT)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "from contextfun.web import CtxWebApp; "
+                    f"app=CtxWebApp(r'{self.db_path}'); "
+                    "print([item['slug'] for item in app.workstreams(scope='all')])"
+                ),
+            ],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("root-web-demo", proc.stdout)
+        self.assertNotIn("temp-web-demo", proc.stdout)
 
 
 if __name__ == "__main__":
