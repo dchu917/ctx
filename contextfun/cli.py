@@ -798,7 +798,7 @@ def cmd_workstream_rename(args: argparse.Namespace):
             "UPDATE workstream SET title = ?, slug = ? WHERE id = ?",
             (new_title, new_slug, int(row["id"])),
         )
-        _index_workstream(conn, int(row["id"]))
+        _reindex_workstream_scope(conn, int(row["id"]))
         cur = _get_current_workstream()
         if cur and int(cur.get("id")) == int(row["id"]):
             _set_current_workstream(conn, wid=int(row["id"]))
@@ -1369,6 +1369,28 @@ def _index_entry(conn: sqlite3.Connection, entry_id: int) -> None:
             row["created_at"],
         ),
     )
+
+
+def _reindex_workstream_scope(conn: sqlite3.Connection, workstream_id: int) -> None:
+    _index_workstream(conn, workstream_id)
+    session_rows = conn.execute(
+        "SELECT id FROM session WHERE workstream_id = ? ORDER BY id",
+        (workstream_id,),
+    ).fetchall()
+    for row in session_rows:
+        _index_session(conn, int(row["id"]))
+    entry_rows = conn.execute(
+        """
+        SELECT e.id
+        FROM entry e
+        JOIN session s ON s.id = e.session_id
+        WHERE s.workstream_id = ?
+        ORDER BY e.id
+        """,
+        (workstream_id,),
+    ).fetchall()
+    for row in entry_rows:
+        _index_entry(conn, int(row["id"]))
 
 
 def _rebuild_search_index(conn: sqlite3.Connection) -> None:

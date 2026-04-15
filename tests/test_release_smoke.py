@@ -1,5 +1,6 @@
 import importlib.util
 import contextlib
+import json
 import os
 import sqlite3
 import subprocess
@@ -31,9 +32,15 @@ class CtxReleaseSmokeTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.tmpdir.name) / "context.db"
+        self.codex_home = Path(self.tmpdir.name) / "codex-home"
+        self.claude_home = Path(self.tmpdir.name) / "claude-home"
+        (self.codex_home / "sessions").mkdir(parents=True, exist_ok=True)
+        (self.claude_home / "projects").mkdir(parents=True, exist_ok=True)
         self.env = os.environ.copy()
         self.env["CONTEXTFUN_DB"] = str(self.db_path)
         self.env["CTX_AUTOPULL_DEFAULT"] = "0"
+        self.env["CODEX_HOME"] = str(self.codex_home)
+        self.env["CLAUDE_HOME"] = str(self.claude_home)
         self.env["PYTHONPATH"] = str(ROOT)
 
     def tearDown(self):
@@ -57,11 +64,107 @@ class CtxReleaseSmokeTests(unittest.TestCase):
             text=True,
         )
 
+    def write_codex_transcript(
+        self,
+        external_session_id: str = "11111111-1111-1111-1111-111111111111",
+    ) -> Path:
+        path = self.codex_home / "sessions" / f"{external_session_id}.jsonl"
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps({"id": external_session_id}),
+                    json.dumps({"role": "user", "content": "Smoke transcript user message"}),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return path
+
     def test_resume_missing_is_clean(self):
         proc = self.run_ctx("resume", "missing-stream")
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout.strip(), "No workstream matching 'missing-stream' exists.")
         self.assertEqual(proc.stderr.strip(), "")
+
+    def test_rename_updates_search_index_for_renamed_workstream(self):
+        self.assertEqual(self.run_ctx("start", "rename-source", "--no-auto-pull").returncode, 0)
+        self.assertEqual(self.run_ctx("note", "Searchable rename note.").returncode, 0)
+
+        renamed = self.run_ctx("rename", "rename-target")
+        self.assertEqual(renamed.returncode, 0, renamed.stderr)
+        self.assertIn("rename-source -> rename-target", renamed.stdout)
+
+        search = self.run_ctx("search", "Searchable rename note.")
+        self.assertEqual(search.returncode, 0, search.stderr)
+        self.assertIn("rename-target", search.stdout)
+        self.assertNotIn("rename-source /", search.stdout)
+        self.assertNotIn("- rename-source —", search.stdout)
+
+        old_resume = self.run_ctx("resume", "rename-source", "--no-compress")
+        self.assertEqual(old_resume.returncode, 0)
+        self.assertEqual(old_resume.stdout.strip(), "No workstream matching 'rename-source' exists.")
+
+        new_resume = self.run_ctx("resume", "rename-target", "--no-compress")
+        self.assertEqual(new_resume.returncode, 0, new_resume.stderr)
+        self.assertIn("## ctx loaded: `rename-target`", new_resume.stdout)
+        self.assertIn("Action: resumed only existing session", new_resume.stdout)
+
+    def test_resume_repo_guard_requires_allow_other_repo(self):
+        with tempfile.TemporaryDirectory() as repo_a_tmp, tempfile.TemporaryDirectory() as repo_b_tmp:
+            repo_a = Path(repo_a_tmp)
+            repo_b = Path(repo_b_tmp)
+            self.assertEqual(self.run_ctx_in(repo_a, "start", "guard-demo", "--no-auto-pull").returncode, 0)
+
+            blocked = self.run_ctx_in(repo_b, "resume", "guard-demo", "--no-compress")
+            self.assertEqual(blocked.returncode, 2)
+            self.assertIn("belongs to another repo", blocked.stderr)
+            self.assertIn("ctx resume guard-demo --allow-other-repo", blocked.stderr)
+
+            allowed = self.run_ctx_in(repo_b, "resume", "guard-demo", "--allow-other-repo", "--no-compress")
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            self.assertIn("## ctx loaded: `guard-demo`", allowed.stdout)
+            self.assertIn("Action: resumed only existing session", allowed.stdout)
+            self.assertIn("current repo is", allowed.stdout)
+
+    def test_branch_repo_guard_requires_allow_other_repo(self):
+        with tempfile.TemporaryDirectory() as repo_a_tmp, tempfile.TemporaryDirectory() as repo_b_tmp:
+            repo_a = Path(repo_a_tmp)
+            repo_b = Path(repo_b_tmp)
+            self.assertEqual(self.run_ctx_in(repo_a, "start", "guard-source", "--no-auto-pull").returncode, 0)
+            self.assertEqual(self.run_ctx_in(repo_a, "note", "Carry this note into the allowed branch.").returncode, 0)
+
+            blocked = self.run_ctx_in(repo_b, "branch", "guard-source", "guard-branch", "--no-compress")
+            self.assertEqual(blocked.returncode, 2)
+            self.assertIn("belongs to another repo", blocked.stderr)
+            self.assertIn("ctx branch guard-source guard-branch --allow-other-repo", blocked.stderr)
+
+            allowed = self.run_ctx_in(
+                repo_b, "branch", "guard-source", "guard-branch", "--allow-other-repo", "--no-compress"
+            )
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            self.assertIn("## ctx loaded: `guard-branch`", allowed.stdout)
+            self.assertIn("Carry this note into the allowed branch.", allowed.stdout)
+
+    def test_delete_workstream_name_removes_latest_session_only(self):
+        self.assertEqual(self.run_ctx("start", "delete-demo", "--no-auto-pull").returncode, 0)
+        self.write_codex_transcript()
+
+        resumed = self.run_ctx("resume", "delete-demo", "--no-auto-pull", "--no-compress")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn("Action: resumed new session for current codex transcript", resumed.stdout)
+
+        deleted = self.run_ctx("delete", "delete-demo")
+        self.assertEqual(deleted.returncode, 0, deleted.stderr)
+        self.assertIn("Deleted session 2: Codex session #delete-demo", deleted.stdout)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT id, title FROM session WHERE workstream_id = (SELECT id FROM workstream WHERE slug = 'delete-demo') ORDER BY id"
+            ).fetchall()
+
+        self.assertEqual([(int(row["id"]), row["title"]) for row in rows], [(1, "New session")])
 
     def test_branch_clones_saved_snapshot(self):
         self.assertEqual(self.run_ctx("start", "branch-source", "--no-compress").returncode, 0)
