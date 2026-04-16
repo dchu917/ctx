@@ -14,7 +14,7 @@ Usage
 - `/ctx branch <source-workstream> <target-workstream>`
 
 Backing script
-- `scripts/skills/ctx.sh`
+- `scripts/ctx.sh`
 
 Notes
 - This skill dispatches to the installed `ctx` command or the repo fallback.

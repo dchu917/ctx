@@ -443,6 +443,18 @@ exec python3 "$ROOT_DIR/scripts/ctx_cmd.py" "$@"
         self.assertIn("ctx install", text)
         self.assertIn("single `ctx` entrypoint", text)
 
+    def test_claude_skill_direct_entrypoints_exist(self):
+        expected = [
+            ROOT / "skills" / "claude" / "branch" / "scripts" / "branch.sh",
+            ROOT / "skills" / "claude" / "ctx" / "scripts" / "ctx.sh",
+            ROOT / "skills" / "claude" / "ctx-delete" / "scripts" / "ctx_delete.sh",
+            ROOT / "skills" / "claude" / "ctx-list" / "scripts" / "ctx_cli_skill.sh",
+            ROOT / "skills" / "claude" / "ctx-resume" / "scripts" / "ctx_resume.sh",
+            ROOT / "skills" / "claude" / "ctx-start" / "scripts" / "ctx_start.sh",
+        ]
+        for path in expected:
+            self.assertTrue(path.exists(), f"missing Claude entrypoint: {path}")
+
     def test_skills_sh_wrapper_bootstraps_when_ctx_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

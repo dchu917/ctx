@@ -9,10 +9,9 @@ Usage
   - `/ctx delete --session-id <id>` — deletes that specific session
 
 What it runs
-- `bash ./scripts/skills/ctx_delete.sh`
+- `bash ./scripts/ctx_delete.sh`
 - Falls back to `ctx delete` or `python3 scripts/ctx_cmd.py delete`
 
 Notes
 - This is destructive.
 - Workstream deletion targets the latest session in the named workstream.
-

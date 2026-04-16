@@ -7,7 +7,7 @@ Usage
 - `/branch <source-workstream> <target-workstream>`
 
 Backing script
-- `scripts/skills/branch.sh`
+- `scripts/branch.sh`
 
 Notes
 - The target workstream must not already exist.

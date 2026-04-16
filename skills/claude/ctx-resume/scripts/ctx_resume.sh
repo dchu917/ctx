@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd -P)"
+exec bash "$HERE/skills/ctx_resume.sh" "$@"
