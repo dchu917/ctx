@@ -597,6 +597,16 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
             )
         self.assertEqual(note, "Pull capture: frontmost copy failed; existing clipboard text was ingested instead.")
 
+    def test_curation_delete_confirmation_requires_double_d(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        self.assertEqual(
+            ctx_cmd._curation_delete_prompt(42),
+            "Confirm delete entry 42: press d again to delete, any other key to cancel.",
+        )
+        self.assertTrue(ctx_cmd._curation_delete_confirmed(ord("d")))
+        self.assertTrue(ctx_cmd._curation_delete_confirmed(ord("D")))
+        self.assertFalse(ctx_cmd._curation_delete_confirmed(ord("y")))
+
     def test_curation_entries_exposes_saved_entries(self):
         self.assertEqual(self.run_ctx("start", "curate-demo", "--no-auto-pull").returncode, 0)
         self.assertEqual(self.run_ctx("note", "Keep this memory available for curation.").returncode, 0)

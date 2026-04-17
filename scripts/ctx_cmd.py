@@ -437,6 +437,14 @@ def _parse_entry_id_args(raw_values: Optional[List[str]]) -> List[int]:
     return parsed
 
 
+def _curation_delete_prompt(entry_id: int) -> str:
+    return f"Confirm delete entry {entry_id}: press d again to delete, any other key to cancel."
+
+
+def _curation_delete_confirmed(key: int) -> bool:
+    return key in (ord("d"), ord("D"))
+
+
 def _launch_curation_ui(workstream: Dict[str, object]) -> int:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         print("Interactive curation requires a real terminal. Use `ctx web --open` if you are in a non-interactive shell.", file=sys.stderr)
@@ -499,7 +507,7 @@ def _launch_curation_ui(workstream: Dict[str, object]) -> int:
                 stdscr.addnstr(
                     2,
                     0,
-                    f"Confirm delete entry {pending_delete}: press y to delete, any other key to cancel.",
+                    _curation_delete_prompt(pending_delete),
                     max(0, w - 1),
                     curses.A_BOLD,
                 )
@@ -546,7 +554,7 @@ def _launch_curation_ui(workstream: Dict[str, object]) -> int:
             key = stdscr.getch()
 
             if pending_delete is not None:
-                if key in (ord("y"), ord("Y")):
+                if _curation_delete_confirmed(key):
                     deleted_id = pending_delete
                     status = _curation_delete_entry(deleted_id)
                     pending_delete = None
@@ -561,7 +569,6 @@ def _launch_curation_ui(workstream: Dict[str, object]) -> int:
                     continue
                 pending_delete = None
                 status = "Delete cancelled."
-                continue
 
             if key in (ord("q"), 27):
                 return 0
