@@ -77,6 +77,43 @@ def _default_home_db_path() -> Path:
     return (ctx_home / "context.db").resolve()
 
 
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
+        return False
+
+
+def _repo_root_for_repo_local_db(path: Path) -> Optional[Path]:
+    resolved = path.resolve()
+    if resolved.name != "context.db":
+        return None
+    parent = resolved.parent
+    if parent.name != ".contextfun":
+        return None
+    return parent.parent
+
+
+def _active_env_db_path() -> Optional[Path]:
+    env_db = _db_env_value()
+    if not env_db:
+        return None
+    resolved = Path(os.path.expanduser(env_db)).resolve()
+    repo_root = _repo_root_for_repo_local_db(resolved)
+    if repo_root is None:
+        return resolved
+    if str(os.getenv("CTX_RESPECT_ENV_DB", "")).strip().lower() in {"1", "true", "yes", "on"}:
+        return resolved
+    try:
+        cwd = Path(_command_cwd()).resolve()
+    except Exception:
+        return resolved
+    if _path_is_within(cwd, repo_root):
+        return resolved
+    return None
+
+
 def _repo_local_db_path() -> Optional[Path]:
     try:
         cwd = Path(_command_cwd()).resolve()
@@ -98,7 +135,7 @@ def _readonly_db_error(output: str) -> bool:
 
 
 def _repo_local_fallback_db(original_db: Path) -> Optional[Path]:
-    if _db_env_value():
+    if _active_env_db_path() is not None:
         return None
     if _current_or_parent_db() is not None:
         return None
@@ -346,9 +383,9 @@ def _should_compress(explicit: bool, disabled: bool) -> bool:
 
 
 def _db_path() -> Path:
-    env_db = _db_env_value()
+    env_db = _active_env_db_path()
     if env_db:
-        return Path(os.path.expanduser(env_db)).resolve()
+        return env_db
     local_db = _current_or_parent_db()
     if local_db is not None:
         return local_db

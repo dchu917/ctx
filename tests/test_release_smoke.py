@@ -1541,6 +1541,54 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
             resolved = ctx_cmd._db_path()
         self.assertEqual(resolved, legacy_db.resolve())
 
+    def test_ctx_cmd_ignores_stale_repo_local_env_db_for_other_repo(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_a = tmp_path / "repo-a"
+            repo_b = tmp_path / "repo-b"
+            repo_a.mkdir(parents=True, exist_ok=True)
+            repo_b.mkdir(parents=True, exist_ok=True)
+            stale_db = (repo_a / ".contextfun" / "context.db").resolve()
+            home_db = (tmp_path / "home" / ".contextfun" / "context.db").resolve()
+            stale_db.parent.mkdir(parents=True, exist_ok=True)
+            stale_db.write_text("", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {"ctx_DB": str(stale_db)},
+                clear=True,
+            ), mock.patch.object(
+                ctx_cmd, "_command_cwd", return_value=str(repo_b)
+            ), mock.patch.object(
+                ctx_cmd, "_default_home_db_path", return_value=home_db
+            ):
+                resolved = ctx_cmd._db_path()
+        self.assertEqual(resolved, home_db)
+
+    def test_ctx_cmd_prefers_current_repo_local_db_over_stale_env_db(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_a = tmp_path / "repo-a"
+            repo_b = tmp_path / "repo-b"
+            repo_a.mkdir(parents=True, exist_ok=True)
+            repo_b.mkdir(parents=True, exist_ok=True)
+            stale_db = (repo_a / ".contextfun" / "context.db").resolve()
+            local_db = (repo_b / ".contextfun" / "context.db").resolve()
+            stale_db.parent.mkdir(parents=True, exist_ok=True)
+            stale_db.write_text("", encoding="utf-8")
+            local_db.parent.mkdir(parents=True, exist_ok=True)
+            local_db.write_text("", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {"ctx_DB": str(stale_db)},
+                clear=True,
+            ), mock.patch.object(
+                ctx_cmd, "_command_cwd", return_value=str(repo_b)
+            ):
+                resolved = ctx_cmd._db_path()
+        self.assertEqual(resolved, local_db)
+
     def test_run_ctx_retries_readonly_home_db_on_repo_local_db(self):
         ctx_cmd = _load_ctx_cmd_module()
         with tempfile.TemporaryDirectory() as tmp:
