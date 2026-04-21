@@ -348,6 +348,103 @@ class CtxReleaseSmokeTests(unittest.TestCase):
         self.assertEqual([(row["source"], row["external_session_id"]) for row in links], [("codex", "12121212-1212-1212-1212-121212121212")])
         self.assertIn("Codex transcript body", entry["content"])
 
+    def test_start_pull_uses_current_codex_thread_snapshot_when_available(self):
+        repo = Path(self.tmpdir.name) / "repo"
+        repo.mkdir()
+        external_session_id = "78787878-7878-7878-7878-787878787878"
+        self.write_codex_transcript(
+            external_session_id,
+            cwd=repo,
+            message="Write tests for @filename",
+            mtime=100,
+        )
+
+        env = self.env.copy()
+        env["CODEX_THREAD_ID"] = external_session_id
+        proc = subprocess.run(
+            [sys.executable, str(CTX_CMD), "start", "pull-demo", "--pull", "--no-auto-pull"],
+            cwd=str(repo),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Pull capture: current codex transcript was ingested.", proc.stdout)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            conn.row_factory = sqlite3.Row
+            ws = conn.execute(
+                "SELECT id FROM workstream WHERE slug = ? ORDER BY id DESC LIMIT 1",
+                ("pull-demo",),
+            ).fetchone()
+            latest_session = conn.execute(
+                "SELECT id, title FROM session WHERE workstream_id = ? ORDER BY id DESC LIMIT 1",
+                (int(ws["id"]),),
+            ).fetchone()
+            links = conn.execute(
+                "SELECT source, external_session_id FROM session_source_link WHERE session_id = ? ORDER BY id",
+                (int(latest_session["id"]),),
+            ).fetchall()
+            entry = conn.execute(
+                "SELECT content FROM entry WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+                (int(latest_session["id"]),),
+            ).fetchone()
+
+        self.assertEqual(latest_session["title"], "Codex session")
+        self.assertEqual(list(links), [])
+        self.assertIn("Write tests for @filename", entry["content"])
+
+    def test_start_pull_falls_back_to_latest_repo_transcript_when_current_thread_is_other_repo(self):
+        repo_a = Path(self.tmpdir.name) / "repo-a"
+        repo_b = Path(self.tmpdir.name) / "repo-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        current_external_session_id = "89898989-8989-8989-8989-898989898989"
+        latest_external_session_id = "90909090-9090-9090-9090-909090909090"
+        self.write_codex_transcript(
+            current_external_session_id,
+            cwd=repo_a,
+            message="Current other-repo transcript",
+            mtime=200,
+        )
+        self.write_codex_transcript(
+            latest_external_session_id,
+            cwd=repo_b,
+            message="Repo B latest transcript",
+            mtime=100,
+        )
+
+        env = self.env.copy()
+        env["CODEX_THREAD_ID"] = current_external_session_id
+        proc = subprocess.run(
+            [sys.executable, str(CTX_CMD), "start", "pull-fallback-demo", "--pull", "--no-auto-pull"],
+            cwd=str(repo_b),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Pull capture: latest codex transcript for this repo was ingested.", proc.stdout)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            conn.row_factory = sqlite3.Row
+            ws = conn.execute(
+                "SELECT id FROM workstream WHERE slug = ? ORDER BY id DESC LIMIT 1",
+                ("pull-fallback-demo",),
+            ).fetchone()
+            latest_session = conn.execute(
+                "SELECT id, title FROM session WHERE workstream_id = ? ORDER BY id DESC LIMIT 1",
+                (int(ws["id"]),),
+            ).fetchone()
+            entry = conn.execute(
+                "SELECT content FROM entry WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+                (int(latest_session["id"]),),
+            ).fetchone()
+
+        self.assertEqual(latest_session["title"], "Codex session")
+        self.assertIn("Repo B latest transcript", entry["content"])
+        self.assertNotIn("Current other-repo transcript", entry["content"])
+
     def test_resume_missing_is_clean(self):
         proc = self.run_ctx("resume", "missing-stream")
         self.assertEqual(proc.returncode, 0)

@@ -1943,6 +1943,39 @@ def _find_transcript_by_external_id(source: str, external_session_id: str) -> Op
     return None
 
 
+def _current_external_session_id(source: str) -> Optional[str]:
+    if source == "codex":
+        names = ("CODEX_THREAD_ID", "CODEX_SESSION_ID")
+    elif source == "claude":
+        names = ("CLAUDE_THREAD_ID", "CLAUDE_SESSION_ID", "CLAUDE_CONVERSATION_ID")
+    else:
+        names = ()
+    for name in names:
+        raw = os.getenv(name)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return None
+
+
+def _current_transcript_candidate(preferred_source: Optional[str] = None) -> Optional[Dict[str, object]]:
+    preferred = _normalize_source(preferred_source)
+    sources = [preferred] if preferred else ["codex", "claude"]
+    current_workspace = _invocation_workspace()
+    for source in sources:
+        if not source:
+            continue
+        external_session_id = _current_external_session_id(source)
+        if not external_session_id:
+            continue
+        candidate = _find_transcript_by_external_id(source, external_session_id)
+        if not candidate:
+            continue
+        relation = _workspace_relation(current_workspace, str(candidate.get("workspace") or ""))
+        if relation in {"current", "unknown"}:
+            return candidate
+    return None
+
+
 def find_latest_codex_transcript() -> Optional[Path]:
     return _latest_jsonl_under(_transcript_root("codex"), source="codex")
 
@@ -2045,7 +2078,9 @@ def _pull_source_for_session(
             return False
         return _ingest_candidate_for_session(workstream, session_id, candidate)
 
-    candidate = _latest_transcript_for_source(source, current_workspace=_invocation_workspace())
+    candidate = _current_transcript_candidate(source)
+    if candidate is None:
+        candidate = _latest_transcript_for_source(source, current_workspace=_invocation_workspace())
     if candidate is None:
         return False
     return _ingest_candidate_for_session(workstream, session_id, candidate)
@@ -2071,9 +2106,20 @@ def _requested_transcript_source(args: argparse.Namespace) -> Optional[str]:
     return None
 
 
+def _snapshot_candidate_into_session(session_id: int, candidate: Dict[str, object]) -> bool:
+    messages = list(candidate.get("messages") or [])
+    if not messages:
+        return False
+    ingest_messages(messages, source_label=str(candidate.get("source") or ""), session_id=session_id)
+    return True
+
+
 def _choose_initial_candidate(preferred_source: Optional[str]) -> Optional[Dict[str, object]]:
     preferred = _normalize_source(preferred_source)
     current_workspace = _invocation_workspace()
+    current_candidate = _current_transcript_candidate(preferred)
+    if current_candidate:
+        return current_candidate
     if preferred:
         candidate = _latest_transcript_for_source(preferred, current_workspace=current_workspace)
         if candidate:
@@ -2467,11 +2513,21 @@ def main():
     elif args.cmd == "start":
         compress = _should_compress(getattr(args, "compress", False), getattr(args, "no_compress", False))
         capture_note = None
+        preferred_source = _requested_transcript_source(args) or _normalize_source(getattr(args, "source", None))
+        current_pull_candidate = _current_transcript_candidate(preferred_source) if args.pull else None
+        pull_candidate = current_pull_candidate
+        if args.pull and pull_candidate is None:
+            pull_candidate = _choose_initial_candidate(preferred_source)
         # Start a new workstream and create its first session. If the name
         # already exists, ctx creates a suffixed variant like "name (1)".
         ws = ensure_workstream(args.name, set_current=True, unique_if_exists=True)
-        sid = _create_session_for_workstream(ws, agent=args.agent)
-        if args.pull:
+        session_agent = args.agent
+        session_title = "New session"
+        if pull_candidate is not None and session_agent == "other":
+            session_agent = str(pull_candidate.get("source") or session_agent)
+            session_title = f"{session_agent.capitalize()} session"
+        sid = _create_session_for_workstream(ws, agent=session_agent, title=session_title)
+        if args.pull and pull_candidate is None:
             args.copy_frontmost = True
             args.from_clipboard = True
         # `ctx start` begins from this point by default. Transcript pull is
@@ -2488,6 +2544,17 @@ def main():
                 ingest_latest_from_codex(ws, sid)
             if args.pull_claude:
                 ingest_latest_from_claude(ws, sid)
+        if args.pull and pull_candidate is not None:
+            if _snapshot_candidate_into_session(sid, pull_candidate):
+                if current_pull_candidate is not None:
+                    capture_note = f"Pull capture: current {pull_candidate['source']} transcript was ingested."
+                else:
+                    capture_note = f"Pull capture: latest {pull_candidate['source']} transcript for this repo was ingested."
+            else:
+                if current_pull_candidate is not None:
+                    capture_note = f"Pull capture: current {pull_candidate['source']} transcript had no conversational messages to ingest."
+                else:
+                    capture_note = f"Pull capture: latest {pull_candidate['source']} transcript for this repo had no conversational messages to ingest."
         # Optional: capture clipboard (optionally copying from frontmost first)
         frontmost_copied = False
         if args.copy_frontmost:
