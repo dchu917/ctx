@@ -291,7 +291,7 @@ def lookup_workstream(name: str) -> Optional[Dict[str, object]]:
     db = _db_path()
     if not db.exists():
         return None
-    with sqlite3.connect(str(db), factory=ClosingConnection) as conn:
+    with sqlite3.connect(str(db), timeout=30, factory=ClosingConnection) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT id, slug, title FROM workstream WHERE slug = ? OR title = ? ORDER BY id DESC LIMIT 1",
@@ -336,7 +336,7 @@ def current_workstream() -> Optional[Dict[str, object]]:
 
 
 def _connect_db() -> sqlite3.Connection:
-    conn = sqlite3.connect(str(_db_path()), factory=ClosingConnection)
+    conn = sqlite3.connect(str(_db_path()), timeout=30, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -605,20 +605,19 @@ def _ingest_clipboard_into_session(
     attempted_frontmost: bool,
     frontmost_copied: bool,
 ) -> str:
+    if attempted_frontmost and not frontmost_copied:
+        return "Pull capture: frontmost copy failed, so no visible chat was ingested."
+
     try:
         clip = subprocess.check_output(["pbpaste"]).decode()
     except Exception:
         if attempted_frontmost and frontmost_copied:
             return "Pull capture: frontmost copy ran, but the clipboard could not be read, so no visible chat was ingested."
-        if attempted_frontmost:
-            return "Pull capture: frontmost copy failed and the clipboard could not be read, so no visible chat was ingested."
         return "Pull capture: clipboard could not be read, so no text was ingested."
 
     if not clip.strip():
         if attempted_frontmost and frontmost_copied:
             return "Pull capture: frontmost copy ran, but the clipboard was empty, so no visible chat was ingested."
-        if attempted_frontmost:
-            return "Pull capture: frontmost copy failed and the clipboard was empty, so no visible chat was ingested."
         return "Pull capture: clipboard was empty, so no text was ingested."
 
     try:
@@ -635,14 +634,10 @@ def _ingest_clipboard_into_session(
     except SystemExit:
         if attempted_frontmost and frontmost_copied:
             return "Pull capture: frontmost chat was copied, but ingest failed, so that chat was not saved."
-        if attempted_frontmost:
-            return "Pull capture: frontmost copy failed; clipboard text was available, but ingest failed."
         return "Pull capture: clipboard text was available, but ingest failed."
 
     if attempted_frontmost and frontmost_copied:
         return "Pull capture: frontmost chat was copied and ingested."
-    if attempted_frontmost:
-        return "Pull capture: frontmost copy failed; existing clipboard text was ingested instead."
     return "Pull capture: existing clipboard text was ingested."
 
 
@@ -1718,6 +1713,19 @@ def _read_jsonl_messages(path: Path) -> List[Dict[str, str]]:
     return deduped
 
 
+def _filter_transcript_messages(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    filtered: List[Dict[str, str]] = []
+    for msg in messages:
+        role = str(msg.get("role") or "system").strip().lower() or "system"
+        content = str(msg.get("content") or "").strip()
+        if role not in {"user", "assistant"}:
+            continue
+        if not content or _looks_like_ctx_noise(content):
+            continue
+        filtered.append({"role": role, "content": content})
+    return filtered
+
+
 def ingest_messages(messages: List[Dict[str, str]], source_label: Optional[str], session_id: Optional[int] = None) -> None:
     if not messages:
         return
@@ -1820,7 +1828,51 @@ def _extract_external_session_id(source: str, path: Path) -> Optional[str]:
     return None
 
 
-def _load_transcript_candidate(source: str, path: Path) -> Optional[Dict[str, object]]:
+def _extract_workspace_hint(value: object) -> Optional[str]:
+    if isinstance(value, dict):
+        for key in ("cwd", "workspace"):
+            raw = value.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+        for key in ("payload", "message", "meta", "metadata", "context"):
+            workspace = _extract_workspace_hint(value.get(key))
+            if workspace:
+                return workspace
+        return None
+    if isinstance(value, list):
+        for item in value:
+            workspace = _extract_workspace_hint(item)
+            if workspace:
+                return workspace
+    return None
+
+
+def _extract_transcript_workspace(source: str, path: Path) -> Optional[str]:
+    try:
+        if path.suffix == ".json":
+            data = json.loads(path.read_text(encoding="utf-8"))
+            workspace = _extract_workspace_hint(data)
+            if workspace:
+                return workspace
+        with path.open("r", encoding="utf-8") as fh:
+            line_limit = 40 if source == "claude" else 12
+            for _ in range(line_limit):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                workspace = _extract_workspace_hint(obj)
+                if workspace:
+                    return workspace
+    except Exception:
+        pass
+    return None
+
+
+def _load_transcript_candidate_header(source: str, path: Path) -> Optional[Dict[str, object]]:
     if not path.exists():
         return None
     external_session_id = _extract_external_session_id(source, path)
@@ -1835,8 +1887,21 @@ def _load_transcript_candidate(source: str, path: Path) -> Optional[Dict[str, ob
         "path": path,
         "external_session_id": external_session_id,
         "mtime": mtime,
-        "messages": _read_jsonl_messages(path),
+        "workspace": _extract_transcript_workspace(source, path),
     }
+
+
+def _hydrate_transcript_candidate(candidate: Dict[str, object]) -> Dict[str, object]:
+    hydrated = dict(candidate)
+    hydrated["messages"] = _filter_transcript_messages(_read_jsonl_messages(Path(str(candidate["path"]))))
+    return hydrated
+
+
+def _load_transcript_candidate(source: str, path: Path) -> Optional[Dict[str, object]]:
+    candidate = _load_transcript_candidate_header(source, path)
+    if not candidate:
+        return None
+    return _hydrate_transcript_candidate(candidate)
 
 
 def _transcript_root(source: str) -> Path:
@@ -1847,19 +1912,34 @@ def _transcript_root(source: str) -> Path:
     raise ValueError(f"Unsupported source: {source}")
 
 
-def _latest_transcript_for_source(source: str) -> Optional[Dict[str, object]]:
-    p = _latest_jsonl_under(_transcript_root(source), source=source)
-    if not p:
+def _latest_transcript_for_source(
+    source: str,
+    *,
+    current_workspace: Optional[str] = None,
+) -> Optional[Dict[str, object]]:
+    latest_any: Optional[Dict[str, object]] = None
+    latest_current: Optional[Dict[str, object]] = None
+    for path in _iter_transcript_files(_transcript_root(source), source):
+        candidate = _load_transcript_candidate_header(source, path)
+        if not candidate:
+            continue
+        if latest_any is None or float(candidate["mtime"]) >= float(latest_any["mtime"]):
+            latest_any = candidate
+        if _workspace_relation(current_workspace, str(candidate.get("workspace") or "")) == "current":
+            if latest_current is None or float(candidate["mtime"]) >= float(latest_current["mtime"]):
+                latest_current = candidate
+    chosen = latest_current or latest_any
+    if not chosen:
         return None
-    return _load_transcript_candidate(source, p)
+    return _hydrate_transcript_candidate(chosen)
 
 
 def _find_transcript_by_external_id(source: str, external_session_id: str) -> Optional[Dict[str, object]]:
     root = _transcript_root(source)
     for path in _iter_transcript_files(root, source):
-        candidate = _load_transcript_candidate(source, path)
+        candidate = _load_transcript_candidate_header(source, path)
         if candidate and candidate["external_session_id"] == external_session_id:
-            return candidate
+            return _hydrate_transcript_candidate(candidate)
     return None
 
 
@@ -1965,26 +2045,53 @@ def _pull_source_for_session(
             return False
         return _ingest_candidate_for_session(workstream, session_id, candidate)
 
-    candidate = _latest_transcript_for_source(source)
+    candidate = _latest_transcript_for_source(source, current_workspace=_invocation_workspace())
     if candidate is None:
         return False
     return _ingest_candidate_for_session(workstream, session_id, candidate)
 
 
+def _candidate_has_substantive_content(candidate: Dict[str, object]) -> bool:
+    messages = candidate.get("messages")
+    if not isinstance(messages, list):
+        return False
+    return bool(messages)
+
+
+def _requested_transcript_source(args: argparse.Namespace) -> Optional[str]:
+    explicit = _normalize_source(getattr(args, "source", None))
+    if explicit:
+        return explicit
+    pull_codex = bool(getattr(args, "pull_codex", False))
+    pull_claude = bool(getattr(args, "pull_claude", False))
+    if pull_codex and not pull_claude:
+        return "codex"
+    if pull_claude and not pull_codex:
+        return "claude"
+    return None
+
+
 def _choose_initial_candidate(preferred_source: Optional[str]) -> Optional[Dict[str, object]]:
     preferred = _normalize_source(preferred_source)
+    current_workspace = _invocation_workspace()
     if preferred:
-        candidate = _latest_transcript_for_source(preferred)
+        candidate = _latest_transcript_for_source(preferred, current_workspace=current_workspace)
         if candidate:
             return candidate
     candidates = []
     for source in ("codex", "claude"):
-        candidate = _latest_transcript_for_source(source)
+        candidate = _latest_transcript_for_source(source, current_workspace=current_workspace)
         if candidate:
             candidates.append(candidate)
     if not candidates:
         return None
-    candidates.sort(key=lambda c: float(c["mtime"]), reverse=True)
+    candidates.sort(
+        key=lambda c: (
+            1 if _candidate_has_substantive_content(c) else 0,
+            float(c["mtime"]),
+        ),
+        reverse=True,
+    )
     return candidates[0]
 
 
@@ -2080,9 +2187,15 @@ def _env_truthy(name: str, default: bool) -> bool:
         return default
 
 
-def _should_auto_pull(flag_auto: bool, flag_no_auto: bool) -> bool:
-    # Default to on; allow opt-out via flag or env
-    default_on = _env_truthy("CTX_AUTOPULL_DEFAULT", True)
+def _should_auto_pull(
+    flag_auto: bool,
+    flag_no_auto: bool,
+    *,
+    default_on: bool = True,
+    env_var: str = "CTX_AUTOPULL_DEFAULT",
+) -> bool:
+    # Allow a per-command default and env override.
+    default_on = _env_truthy(env_var, default_on)
     if flag_no_auto:
         return False
     if flag_auto:
@@ -2153,7 +2266,7 @@ def main():
     p_start.add_argument("--source", default=os.getenv("CTX_SOURCE_DEFAULT"), help="Optional source label for ingest (e.g., claude, codex)")
     p_start.add_argument("--pull-codex", action="store_true", help="Import latest Codex transcript into the session")
     p_start.add_argument("--pull-claude", action="store_true", help="Import latest Claude Code transcript into the session")
-    p_start.add_argument("--auto-pull", action="store_true", help="Import the newest transcript between Codex and Claude (default on; see CTX_AUTOPULL_DEFAULT)")
+    p_start.add_argument("--auto-pull", action="store_true", help="Import the newest transcript between Codex and Claude (default off; see CTX_START_AUTOPULL_DEFAULT)")
     p_start.add_argument("--no-auto-pull", action="store_true", help="Disable auto-pull for this invocation")
     p_start.add_argument("--compress", action="store_true", help="Use a compressed pack instead of the full load")
     p_start.add_argument("--no-compress", action="store_true", help="Do not compress the load output")
@@ -2291,13 +2404,14 @@ def main():
         )
         run_ctx(["workstream-set-current", "--slug", str(ws["slug"])])
         ws = current_workstream() or ws
+        preferred_source = _requested_transcript_source(args)
         sid, action_label, initial_candidate = _select_resume_session(
             ws,
-            preferred_source=args.source,
-            agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"),
+            preferred_source=preferred_source,
+            agent=preferred_source or os.getenv("CTX_AGENT_DEFAULT"),
         )
         if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
-            auto_pull(ws, sid, preferred_source=args.source, initial_candidate=initial_candidate)
+            auto_pull(ws, sid, preferred_source=preferred_source, initial_candidate=initial_candidate)
         sys.stdout.write(
             _render_loaded_output(
                 ws,
@@ -2331,13 +2445,14 @@ def main():
         if not ws:
             print("No current workstream set; run 'ctx set <name>' or use start/resume first.", file=sys.stderr)
             return 2
+        preferred_source = _requested_transcript_source(args)
         sid, _action_label, initial_candidate = _select_resume_session(
             ws,
-            preferred_source=args.source,
-            agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"),
+            preferred_source=preferred_source,
+            agent=preferred_source or os.getenv("CTX_AGENT_DEFAULT"),
         )
         if args.auto or (not args.codex and not args.claude):
-            ok, who = auto_pull(ws, sid, preferred_source=args.source, initial_candidate=initial_candidate)
+            ok, who = auto_pull(ws, sid, preferred_source=preferred_source, initial_candidate=initial_candidate)
             sys.stdout.write((who or "none") + ("\n" if ok else "\n"))
         else:
             if args.codex:
@@ -2359,9 +2474,14 @@ def main():
         if args.pull:
             args.copy_frontmost = True
             args.from_clipboard = True
-        # Pull stored agent transcript(s) first so an explicit --pull of the
-        # current chat becomes the freshest context in the new session.
-        if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
+        # `ctx start` begins from this point by default. Transcript pull is
+        # opt-in here so `--pull` can capture just the current visible chat.
+        if _should_auto_pull(
+            getattr(args, "auto_pull", False),
+            getattr(args, "no_auto_pull", False),
+            default_on=False,
+            env_var="CTX_START_AUTOPULL_DEFAULT",
+        ):
             auto_pull(ws, sid, preferred_source=(args.source or args.agent))
         else:
             if args.pull_codex:
@@ -2408,14 +2528,15 @@ def main():
         )
         run_ctx(["workstream-set-current", "--slug", str(ws["slug"])])
         ws = current_workstream() or ws
+        preferred_source = _requested_transcript_source(args)
         sid, action_label, initial_candidate = _select_resume_session(
             ws,
-            preferred_source=args.source,
-            agent=_normalize_source(args.source) or os.getenv("CTX_AGENT_DEFAULT"),
+            preferred_source=preferred_source,
+            agent=preferred_source or os.getenv("CTX_AGENT_DEFAULT"),
         )
         # Optionally pull before emitting
         if _should_auto_pull(getattr(args, "auto_pull", False), getattr(args, "no_auto_pull", False)):
-            auto_pull(ws, sid, preferred_source=args.source, initial_candidate=initial_candidate)
+            auto_pull(ws, sid, preferred_source=preferred_source, initial_candidate=initial_candidate)
         else:
             if args.pull_codex:
                 ingest_latest_from_codex(ws, sid)

@@ -105,19 +105,248 @@ class CtxReleaseSmokeTests(unittest.TestCase):
     def write_codex_transcript(
         self,
         external_session_id: str = "11111111-1111-1111-1111-111111111111",
+        *,
+        cwd: str | Path | None = None,
+        message: str = "Smoke transcript user message",
+        mtime: float | None = None,
     ) -> Path:
         path = self.codex_home / "sessions" / f"{external_session_id}.jsonl"
+        header = (
+            {"type": "session_meta", "payload": {"id": external_session_id, "cwd": str(cwd)}}
+            if cwd is not None
+            else {"id": external_session_id}
+        )
         path.write_text(
             "\n".join(
                 [
-                    json.dumps({"id": external_session_id}),
-                    json.dumps({"role": "user", "content": "Smoke transcript user message"}),
+                    json.dumps(header),
+                    json.dumps({"role": "user", "content": message}),
                     "",
                 ]
             ),
             encoding="utf-8",
         )
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
         return path
+
+    def write_claude_transcript(
+        self,
+        external_session_id: str = "22222222-2222-2222-2222-222222222222",
+        *,
+        cwd: str | Path | None = None,
+        message: str = "Claude transcript line",
+        mtime: float | None = None,
+    ) -> Path:
+        project_dir = self.claude_home / "projects" / "demo-project"
+        project_dir.mkdir(parents=True, exist_ok=True)
+        path = project_dir / f"{external_session_id}.jsonl"
+        payload = {"sessionId": external_session_id, "role": "user", "content": message}
+        if cwd is not None:
+            payload["cwd"] = str(cwd)
+        path.write_text("\n".join([json.dumps(payload), ""]), encoding="utf-8")
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
+        return path
+
+    def test_start_skips_auto_pull_by_default_even_when_global_default_is_on(self):
+        self.write_codex_transcript()
+        env = self.env.copy()
+        env["CTX_AUTOPULL_DEFAULT"] = "1"
+
+        proc = subprocess.run(
+            [sys.executable, str(CTX_CMD), "start", "start-no-auto"],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            row = conn.execute("SELECT COUNT(*) FROM entry").fetchone()
+
+        self.assertEqual(int(row[0]), 0)
+
+    def test_start_auto_pull_can_be_enabled_explicitly(self):
+        self.write_codex_transcript()
+
+        proc = self.run_ctx("start", "start-with-auto", "--auto-pull")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            row = conn.execute(
+                "SELECT content FROM entry ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertIn("Smoke transcript user message", row[0])
+
+    def test_choose_initial_candidate_prefers_current_workspace_over_newer_other_repo(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        repo_a = Path(self.tmpdir.name) / "repo-a"
+        repo_b = Path(self.tmpdir.name) / "repo-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        self.write_codex_transcript(
+            "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            cwd=repo_b,
+            message="Repo B transcript",
+            mtime=100,
+        )
+        self.write_codex_transcript(
+            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+            cwd=repo_a,
+            message="Repo A transcript",
+            mtime=200,
+        )
+
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch.object(
+            ctx_cmd, "_invocation_workspace", return_value=str(repo_b)
+        ):
+            candidate = ctx_cmd._choose_initial_candidate("codex")
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate["external_session_id"], "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+        self.assertIn("Repo B transcript", candidate["messages"][-1]["content"])
+
+    def test_choose_initial_candidate_prefers_substantive_codex_over_newer_ctx_noise_claude(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        repo = Path(self.tmpdir.name) / "repo"
+        repo.mkdir()
+        self.write_codex_transcript(
+            "cccccccc-cccc-cccc-cccc-cccccccccccc",
+            cwd=repo,
+            message="Write tests for @filename",
+            mtime=100,
+        )
+        self.write_claude_transcript(
+            "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            cwd=repo,
+            message="/ctx resume test",
+            mtime=200,
+        )
+
+        with mock.patch.dict(os.environ, self.env, clear=False), mock.patch.object(
+            ctx_cmd, "_invocation_workspace", return_value=str(repo)
+        ):
+            candidate = ctx_cmd._choose_initial_candidate(None)
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(candidate["source"], "codex")
+        self.assertEqual(candidate["external_session_id"], "cccccccc-cccc-cccc-cccc-cccccccccccc")
+
+    def test_load_transcript_candidate_filters_non_conversational_noise(self):
+        ctx_cmd = _load_ctx_cmd_module()
+        repo = Path(self.tmpdir.name) / "repo"
+        repo.mkdir()
+        external_session_id = "56565656-5656-5656-5656-565656565656"
+        path = self.codex_home / "sessions" / f"{external_session_id}.jsonl"
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "session_meta", "payload": {"id": external_session_id, "cwd": str(repo)}}),
+                    json.dumps({"type": "response_item", "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "developer instructions"}]}}),
+                    json.dumps({"role": "user", "content": "ctx resume test"}),
+                    json.dumps({"role": "user", "content": "Write tests for @filename"}),
+                    json.dumps({"type": "response_item", "payload": {"type": "function_call", "name": "exec_command", "arguments": "{\"cmd\":\"pwd\"}"}}),
+                    json.dumps({"type": "response_item", "payload": {"type": "function_call_output", "output": "Chunk ID: demo"}}),
+                    json.dumps({"role": "assistant", "content": "I’m writing the tests now."}),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        candidate = ctx_cmd._load_transcript_candidate("codex", path)
+
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertEqual(
+            candidate["messages"],
+            [
+                {"role": "user", "content": "Write tests for @filename"},
+                {"role": "assistant", "content": "I’m writing the tests now."},
+            ],
+        )
+
+    def test_resume_pull_codex_prefers_current_workspace_transcript(self):
+        repo_a = Path(self.tmpdir.name) / "repo-a"
+        repo_b = Path(self.tmpdir.name) / "repo-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        self.write_codex_transcript(
+            "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+            cwd=repo_b,
+            message="Repo B transcript",
+            mtime=100,
+        )
+        self.write_codex_transcript(
+            "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            cwd=repo_a,
+            message="Repo A transcript",
+            mtime=200,
+        )
+
+        started = self.run_ctx_in(repo_b, "start", "workspace-demo", "--no-auto-pull")
+        self.assertEqual(started.returncode, 0, started.stderr)
+
+        resumed = self.run_ctx_in(repo_b, "resume", "workspace-demo", "--pull-codex", "--no-auto-pull")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            row = conn.execute("SELECT content FROM entry ORDER BY id DESC LIMIT 1").fetchone()
+
+        self.assertIsNotNone(row)
+        self.assertIn("Repo B transcript", row[0])
+        self.assertNotIn("Repo A transcript", row[0])
+
+    def test_resume_pull_codex_prefers_codex_for_session_selection_even_if_claude_is_newer(self):
+        repo = Path(self.tmpdir.name) / "repo"
+        repo.mkdir()
+        self.write_codex_transcript(
+            "12121212-1212-1212-1212-121212121212",
+            cwd=repo,
+            message="Codex transcript body",
+            mtime=100,
+        )
+        self.write_claude_transcript(
+            "34343434-3434-3434-3434-343434343434",
+            cwd=repo,
+            message="Claude transcript body",
+            mtime=200,
+        )
+
+        started = self.run_ctx_in(repo, "start", "source-bias-demo", "--no-auto-pull")
+        self.assertEqual(started.returncode, 0, started.stderr)
+
+        resumed = self.run_ctx_in(repo, "resume", "source-bias-demo", "--pull-codex", "--no-auto-pull", "--no-compress")
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+
+        with contextlib.closing(sqlite3.connect(str(self.db_path))) as conn:
+            conn.row_factory = sqlite3.Row
+            ws = conn.execute(
+                "SELECT id FROM workstream WHERE slug = ? ORDER BY id DESC LIMIT 1",
+                ("source-bias-demo",),
+            ).fetchone()
+            latest_session = conn.execute(
+                "SELECT id, title FROM session WHERE workstream_id = ? ORDER BY id DESC LIMIT 1",
+                (int(ws["id"]),),
+            ).fetchone()
+            links = conn.execute(
+                "SELECT source, external_session_id FROM session_source_link WHERE session_id = ? ORDER BY id",
+                (int(latest_session["id"]),),
+            ).fetchall()
+            entry = conn.execute(
+                "SELECT content FROM entry WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+                (int(latest_session["id"]),),
+            ).fetchone()
+
+        self.assertEqual(latest_session["title"], "Codex session")
+        self.assertEqual([(row["source"], row["external_session_id"]) for row in links], [("codex", "12121212-1212-1212-1212-121212121212")])
+        self.assertIn("Codex transcript body", entry["content"])
 
     def test_resume_missing_is_clean(self):
         proc = self.run_ctx("resume", "missing-stream")
@@ -1284,11 +1513,11 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
 
-    def test_pull_feedback_mentions_clipboard_fallback(self):
+    def test_pull_feedback_does_not_fallback_to_existing_clipboard_when_frontmost_copy_fails(self):
         ctx_cmd = _load_ctx_cmd_module()
-        with mock.patch.object(ctx_cmd.subprocess, "check_output", return_value=b"clipboard text"), mock.patch.object(
-            ctx_cmd, "run_ctx", return_value=""
-        ):
+        with mock.patch.object(ctx_cmd.subprocess, "check_output") as check_output, mock.patch.object(
+            ctx_cmd, "run_ctx"
+        ) as run_ctx_call:
             note = ctx_cmd._ingest_clipboard_into_session(
                 1,
                 fmt="markdown",
@@ -1296,7 +1525,9 @@ printf 'installed\\n' > "$HOME/install-ran.txt"
                 attempted_frontmost=True,
                 frontmost_copied=False,
             )
-        self.assertEqual(note, "Pull capture: frontmost copy failed; existing clipboard text was ingested instead.")
+        check_output.assert_not_called()
+        run_ctx_call.assert_not_called()
+        self.assertEqual(note, "Pull capture: frontmost copy failed, so no visible chat was ingested.")
 
     def test_curation_entries_exposes_saved_entries(self):
         self.assertEqual(self.run_ctx("start", "curate-demo", "--no-auto-pull").returncode, 0)
